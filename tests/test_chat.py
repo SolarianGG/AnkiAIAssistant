@@ -1,4 +1,4 @@
-"""The chat's logic without Qt: transcript, request context, model presets, card previews, config check."""
+"""The chat's logic without Qt: transcript, request context, model profiles, card previews, config check."""
 
 import json
 
@@ -7,9 +7,9 @@ from smolagents.agents import ToolOutput
 from smolagents.memory import ToolCall
 
 from anki_ai_assistant.anki_api.previews import note_ids_from_output, previews_html
-from anki_ai_assistant.core.config import check_config, load_config
-from anki_ai_assistant.core.context import (NotesContext, manager_choices, parse_presets, task_with_context,
-                                            with_manager)
+from anki_ai_assistant.core.config import (check_config, duplicate_labels, load_config, profile_choices,
+                                           profile_label, with_profile, with_profiles)
+from anki_ai_assistant.core.context import NotesContext, task_with_context
 from anki_ai_assistant.core.transcript import BROWSE_LINK, Step, Transcript
 from conftest import add_note
 
@@ -91,40 +91,59 @@ def test_the_request_names_the_selected_notes():
     assert NotesContext((1, 2), "browser").label == "2 selected notes"
 
 
-# Model presets
+# Model profiles
 
-def config_with_presets():
+def config_with_profiles():
     config = load_config({})
     config["roles"]["manager"] = {"provider": "ollama", "model": "qwen3.5:9b", "reasoning_effort": "none",
                                   "context_length": 32768, "max_steps": 30}
-    config["manager_presets"] = [{"provider": "openrouter", "model": "z-ai/glm-5.3-flash"},
-                                 {"provider": "ollama", "model": "qwen3.5:9b"}]
+    other_roles = {**config["roles"], "manager": {"provider": "openrouter", "model": "z-ai/glm-5.3-flash"},
+                   "searcher": {"provider": "openrouter", "model": "google/gemma-4-31b-it", "max_steps": 10}}
+    config["profiles"] = [{"name": "cloud", "roles": other_roles},
+                          {"name": "", "roles": config["roles"]}]  # the same label as the current one
     return config
 
 
-def test_choices_start_with_the_current_model_without_repeats():
-    choices = manager_choices(config_with_presets())
-    assert [(c["provider"], c["model"]) for c in choices] == [("ollama", "qwen3.5:9b"),
-                                                              ("openrouter", "z-ai/glm-5.3-flash")]
-    assert "max_steps" not in choices[0]
+def test_choices_start_with_the_current_profile_without_repeats():
+    choices = profile_choices(config_with_profiles())
+    assert [profile_label(c) for c in choices] == ["ollama / qwen3.5:9b", "cloud"]
 
 
-def test_switching_models_keeps_the_settings_of_both():
-    config = config_with_presets()
-    switched = with_manager(config, manager_choices(config)[1])
-    assert switched["roles"]["manager"] == {"provider": "openrouter", "model": "z-ai/glm-5.3-flash", "max_steps": 30}
-    back = with_manager(switched, manager_choices(switched)[1])
-    assert back["roles"]["manager"] == config["roles"]["manager"]
+def test_switching_profiles_changes_all_roles_and_keeps_the_previous_one():
+    config = config_with_profiles()
+    switched = with_profile(config, profile_choices(config)[1])
+    assert switched["profile_name"] == "cloud"
+    assert switched["roles"]["manager"] == {"provider": "openrouter", "model": "z-ai/glm-5.3-flash"}
+    assert switched["roles"]["searcher"]["max_steps"] == 10
+    back = with_profile(switched, profile_choices(switched)[1])
+    assert back["roles"] == config["roles"] and back["profile_name"] == ""
+    assert [profile_label(p) for p in back["profiles"]] == ["cloud"]
     # The original config is not changed
     assert config["roles"]["manager"]["model"] == "qwen3.5:9b"
 
 
-def test_presets_are_parsed_from_lines():
-    old = [{"provider": "ollama", "model": "qwen3.5:9b", "context_length": 16384}]
-    presets = parse_presets("openrouter / z-ai/glm-5.3-flash\n\nollama / qwen3.5:9b\n", old)
-    assert presets == [{"provider": "openrouter", "model": "z-ai/glm-5.3-flash"}, old[0]]
-    with pytest.raises(ValueError):
-        parse_presets("just-a-model", [])
+def test_saved_profiles_replace_the_roles_and_the_others():
+    config = config_with_profiles()
+    profiles = profile_choices(config)
+    result = with_profiles(config, profiles, 1)
+    assert result["roles"]["searcher"]["model"] == "google/gemma-4-31b-it"
+    assert [profile_label(p) for p in result["profiles"]] == ["ollama / qwen3.5:9b"]
+    assert duplicate_labels(profiles + [{"name": "cloud", "roles": {}}]) == ["cloud"]
+    assert duplicate_labels(profiles) == []
+
+
+def test_manager_presets_of_older_versions_become_profiles():
+    config = load_config({"roles": {"manager": {"provider": "ollama", "model": "qwen3.5:9b", "name": "local",
+                                                "max_steps": 30}},
+                          "manager_presets": [{"name": "glm", "provider": "openrouter",
+                                               "model": "z-ai/glm-5.3-flash"}]})
+    assert "manager_presets" not in config and "name" not in config["roles"]["manager"]
+    assert config["profile_name"] == "local"
+    [profile] = config["profiles"]
+    assert profile["name"] == "glm"
+    assert profile["roles"]["manager"] == {"provider": "openrouter", "model": "z-ai/glm-5.3-flash", "max_steps": 30}
+    assert profile["roles"]["validator"] == config["roles"]["validator"]
+    assert check_config(config) == []
 
 
 # Config check
@@ -173,37 +192,38 @@ def test_previews_skip_notes_that_are_gone(col):
 
 # Runner
 
-def test_a_new_model_is_used_from_the_next_request_of_the_same_dialog():
+def test_new_models_are_used_from_the_next_request_of_the_same_dialog():
     import threading
 
     from anki_ai_assistant.core.runner import AgentRunner
 
     class FakeAgent:
-        managed_agents = {}
-
-        def __init__(self):
-            self.model, self.resets = "old", []
+        def __init__(self, model):
+            self.model, self.resets = model, []
+            self.managed_agents, self.max_steps = {"image_searcher": f"searcher of {model}"}, len(model)
 
         def run(self, task, stream, reset):
             self.resets.append(reset)
             yield from ()
 
-    agents, done = [], threading.Event()
+    models, agents, done = iter(["old", "new"]), [], threading.Event()
 
     def factory():
-        agents.append(FakeAgent())
+        agents.append(FakeAgent(next(models)))
         return agents[-1]
 
     runner = AgentRunner(factory, on_event=print, on_done=lambda _: done.set(), on_error=print, on_stopped=print)
-    runner.change_model(lambda: "ignored")  # no dialog yet: the agent is built from the config anyway
-    for model in (None, "new"):
-        if model:
-            runner.change_model(lambda: model)
+    runner.change_models()  # no dialog yet: the agent is built from the config anyway
+    for change in (False, True):
+        if change:
+            runner.change_models()
         done.clear()
         runner.submit("hi")
         assert done.wait(5)
         runner._thread.join(5)
-    assert len(agents) == 1 and agents[0].model == "new"
+    dialog = agents[0]
+    assert len(agents) == 2 and len(dialog.resets) == 2  # both requests ran in the first agent
+    assert (dialog.model, dialog.managed_agents["image_searcher"], dialog.max_steps) == ("new", "searcher of new", 3)
 
 
 def test_failed_calls_are_marked():

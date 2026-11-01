@@ -6,7 +6,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from smolagents import Model, ToolCallingAgent
+from smolagents import ToolCallingAgent
 from smolagents.memory import FinalAnswerStep
 from smolagents.utils import AgentMaxStepsError
 
@@ -42,8 +42,8 @@ class AgentRunner:
         self._has_history = False
         self._thread: threading.Thread | None = None
         self._stop_requested = threading.Event()
-        # A new manager model for the current dialog, built in the worker on the next request
-        self._model_factory: Callable[[], Model] | None = None
+        # The saved models changed: the current dialog takes them on the next request
+        self._models_changed = False
 
     @property
     def busy(self) -> bool:
@@ -67,14 +67,15 @@ class AgentRunner:
             for managed_agent in self._agent.managed_agents.values():
                 managed_agent.interrupt()
 
-    def change_model(self, model_factory: Callable[[], Model]) -> None:
-        """Use another manager model from the next request on, keeping the dialog.
+    def change_models(self) -> None:
+        """Use the models of the saved config (another profile) from the next request on, keeping the dialog.
 
-        The factory runs in the worker thread: building a model may need the network (Ollama's context_length)."""
+        The agent factory builds them in the worker thread: building a model may need the network
+        (Ollama's context_length)."""
         if self.busy:
-            raise RunnerBusy("Stop the assistant before changing the model.")
+            raise RunnerBusy("Stop the assistant before changing the models.")
         if self._agent is not None:
-            self._model_factory = model_factory
+            self._models_changed = True
 
     def new_dialog(self) -> None:
         """Forget the conversation. The agent is rebuilt on the next request, so config changes apply too."""
@@ -82,7 +83,7 @@ class AgentRunner:
             raise RunnerBusy("Stop the assistant before starting a new dialog.")
         self._agent = None
         self._has_history = False
-        self._model_factory = None
+        self._models_changed = False
 
     def _max_steps_reached(self) -> bool:
         steps = getattr(getattr(self._agent, "memory", None), "steps", None) or []
@@ -92,9 +93,14 @@ class AgentRunner:
         try:
             if self._agent is None:
                 self._agent = self._agent_factory()
-            elif self._model_factory is not None:
-                self._agent.model = self._model_factory()
-                self._model_factory = None
+            elif self._models_changed:
+                # A fresh agent has the new models; the dialog's memory stays in the current one.
+                # The image searcher is a new managed agent: each of its calls starts from scratch anyway
+                fresh = self._agent_factory()
+                self._agent.model = fresh.model
+                self._agent.managed_agents = fresh.managed_agents
+                self._agent.max_steps = fresh.max_steps
+                self._models_changed = False
             if self._stop_requested.is_set():
                 self._on_stopped()
                 return

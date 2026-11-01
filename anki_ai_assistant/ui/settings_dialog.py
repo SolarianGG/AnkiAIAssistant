@@ -1,4 +1,5 @@
-"""The settings dialog: providers, the models of each role and the other settings, instead of editing JSON.
+"""The settings dialog: providers, model profiles (the models of the three roles) and the other settings,
+instead of editing JSON.
 
 It edits a copy of the full config, so keys it has no fields for are kept as they are."""
 
@@ -7,12 +8,11 @@ import json
 from collections.abc import Callable
 
 from aqt.qt import (QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
-                    QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget, QTabWidget,
+                    QLabel, QLineEdit, QPushButton, QSpinBox, QTableWidget, QTabWidget,
                     QVBoxLayout, QWidget)
 from aqt.utils import showWarning
 
-from ..core.config import ROLES, check_config
-from ..core.context import model_label, parse_presets
+from ..core.config import ROLES, check_config, duplicate_labels, profile_choices, profile_label, with_profiles
 
 ROLE_TITLES = {
     "manager": "Assistant (works with your collection; a cloud model is recommended)",
@@ -31,14 +31,13 @@ class RoleForm(QGroupBox):
 
         self.provider = QComboBox(self)
         form.addRow("Provider", self.provider)
-        self.model = QLineEdit(config.get("model", ""), self)
+        self.model = QLineEdit(self)
         self.model.setPlaceholderText("e.g. z-ai/glm-5.3-flash or qwen3.5:9b")
         form.addRow("Model", self.model)
 
         self.reasoning = QComboBox(self)
         self.reasoning.setEditable(True)
         self.reasoning.addItems(REASONING_EFFORTS)
-        self.reasoning.setCurrentText(config.get("reasoning_effort", ""))
         self.reasoning.setToolTip("Empty: the model's default. 'none' turns thinking off (much faster with Ollama).")
         form.addRow("Reasoning effort", self.reasoning)
 
@@ -46,21 +45,34 @@ class RoleForm(QGroupBox):
         if role != "validator":
             self.max_steps = QSpinBox(self)
             self.max_steps.setRange(1, 200)
-            self.max_steps.setValue(int(config.get("max_steps", 20)))
             form.addRow("Max steps per request", self.max_steps)
 
         self.context_length = QSpinBox(self)
         self.context_length.setRange(0, 1048576)
         self.context_length.setSingleStep(4096)
         self.context_length.setSpecialValueText("server default")
-        self.context_length.setValue(int(config.get("context_length") or 0))
         self.context_length.setToolTip("Ollama only, other providers ignore it. The assistant needs at least 16384 tokens, 32768 is better.")
         form.addRow("Context length (Ollama)", self.context_length)
 
-        extra = config.get("extra_body")
-        self.extra_body = QLineEdit(json.dumps(extra, ensure_ascii=False) if extra else "", self)
+        self.extra_body = QLineEdit(self)
         self.extra_body.setPlaceholderText('optional JSON, e.g. {"provider": {"order": ["fireworks"]}}')
         form.addRow("Extra request fields", self.extra_body)
+        self.load(config)
+
+    def load(self, config: dict) -> None:
+        """Show this role config."""
+        self.config = dict(config)
+        provider = config.get("provider", "")
+        if provider and self.provider.findText(provider) < 0:
+            self.provider.addItem(provider)
+        self.provider.setCurrentText(provider)
+        self.model.setText(config.get("model", ""))
+        self.reasoning.setCurrentText(config.get("reasoning_effort", ""))
+        if self.max_steps is not None:
+            self.max_steps.setValue(int(config.get("max_steps", 20)))
+        self.context_length.setValue(int(config.get("context_length") or 0))
+        extra = config.get("extra_body")
+        self.extra_body.setText(json.dumps(extra, ensure_ascii=False) if extra else "")
 
     def set_providers(self, names: list[str], renamed: dict[str, str]) -> None:
         current = self.provider.currentText() or self.config.get("provider", "")
@@ -133,19 +145,13 @@ class SettingsDialog(QDialog):
         # Models
         models_tab = QWidget(self)
         models_layout = QVBoxLayout(models_tab)
+        models_layout.addWidget(self._profile_box(models_tab))
         self.roles = {role: RoleForm(models_tab, role, self.config["roles"].get(role, {})) for role in ROLES}
         for form in self.roles.values():
             models_layout.addWidget(form)
-        presets_box = QGroupBox("Other models to pick in the chat", models_tab)
-        presets_layout = QVBoxLayout(presets_box)
-        presets_layout.addWidget(QLabel("One per line: provider / model", presets_box))
-        self.presets = QPlainTextEdit(presets_box)
-        self.presets.setPlainText("\n".join(
-            model_label(p.get("provider", ""), p.get("model", ""))
-            for p in self.config.get("manager_presets") or [] if isinstance(p, dict)))
-        self.presets.setMaximumHeight(90)
-        presets_layout.addWidget(self.presets)
-        models_layout.addWidget(presets_box)
+        for signal in (self.profile_name.textChanged, self.roles["manager"].model.textChanged,
+                       self.roles["manager"].provider.currentTextChanged):
+            signal.connect(self._update_profile_label)
         tabs.addTab(models_tab, "Models")
 
         # General
@@ -174,6 +180,107 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    # Profiles: saved sets of the three roles' models, to switch between them in the chat
+
+    def _profile_box(self, parent: QWidget) -> QGroupBox:
+        box = QGroupBox("Profile", parent)
+        form = QFormLayout(box)
+        self.profiles = profile_choices(self.config)
+        self.profile_index = 0
+        row = QHBoxLayout()
+        self.profile_picker = QComboBox(box)
+        self.profile_picker.setToolTip("Saved sets of the three models below, to switch between them in the chat. "
+                                       "The profile shown when you save is used.")
+        self.profile_picker.addItems([profile_label(p) for p in self.profiles])
+        self.profile_picker.currentIndexChanged.connect(self._on_profile_picked)
+        row.addWidget(self.profile_picker, stretch=1)
+        new_button = QPushButton("New", box)
+        new_button.setToolTip("Save another profile: starts as a copy of the one shown")
+        new_button.clicked.connect(self._new_profile)
+        row.addWidget(new_button)
+        self.delete_profile_button = QPushButton("Delete", box)
+        self.delete_profile_button.clicked.connect(self._delete_profile)
+        row.addWidget(self.delete_profile_button)
+        form.addRow("Profile", row)
+        self.profile_name = QLineEdit(self.profiles[0].get("name", ""), box)
+        self.profile_name.setPlaceholderText("optional: without a name the profile is shown as the assistant's "
+                                             "provider / model")
+        form.addRow("Name", self.profile_name)
+        self._update_profile_buttons()
+        return box
+
+    def _shown_profile(self) -> dict:
+        """The profile as the fields show it; raises ValueError for invalid fields."""
+        return {"name": self.profile_name.text().strip(),
+                "roles": {role: form.value() for role, form in self.roles.items()}}
+
+    def _store_profile(self) -> bool:
+        """Keep the edits of the shown profile. False (after a warning) if a field is invalid."""
+        try:
+            self.profiles[self.profile_index] = self._shown_profile()
+        except ValueError as e:
+            showWarning(str(e), parent=self, title="AI Assistant settings")
+            return False
+        return True
+
+    def _show_profile(self, index: int) -> None:
+        self.profile_index = index
+        profile = self.profiles[index]
+        for role, form in self.roles.items():
+            form.load(profile["roles"].get(role, {}))
+        self.profile_name.setText(profile.get("name", ""))
+        self._select_profile_item(index)
+        self._update_profile_label()
+        self._update_profile_buttons()
+
+    def _on_profile_picked(self, index: int) -> None:
+        if index < 0 or index == self.profile_index:
+            return
+        if not self._store_profile():
+            self._select_profile_item(self.profile_index)
+            return
+        self._show_profile(index)
+
+    def _new_profile(self) -> None:
+        if not self._store_profile():
+            return
+        labels = {profile_label(p) for p in self.profiles}
+        number = len(self.profiles) + 1
+        while f"Profile {number}" in labels:
+            number += 1
+        self.profiles.append({**copy.deepcopy(self.profiles[self.profile_index]), "name": f"Profile {number}"})
+        self.profile_picker.blockSignals(True)
+        self.profile_picker.addItem("")
+        self.profile_picker.blockSignals(False)
+        self._show_profile(len(self.profiles) - 1)
+        self.profile_name.setFocus()
+        self.profile_name.selectAll()
+
+    def _delete_profile(self) -> None:
+        if len(self.profiles) < 2:
+            return
+        index = self.profile_index
+        del self.profiles[index]
+        self.profile_picker.blockSignals(True)
+        self.profile_picker.removeItem(index)
+        self.profile_picker.blockSignals(False)
+        self._show_profile(max(0, index - 1))
+
+    def _select_profile_item(self, index: int) -> None:
+        self.profile_picker.blockSignals(True)
+        self.profile_picker.setCurrentIndex(index)
+        self.profile_picker.blockSignals(False)
+
+    def _update_profile_label(self) -> None:
+        manager = self.roles["manager"]
+        label = profile_label({"name": self.profile_name.text(), "roles": {"manager": {
+            "provider": manager.provider.currentText(), "model": manager.model.text().strip()}}})
+        if self.profile_index < self.profile_picker.count():
+            self.profile_picker.setItemText(self.profile_index, label)
+
+    def _update_profile_buttons(self) -> None:
+        self.delete_profile_button.setEnabled(len(self.profiles) > 1)
 
     def _add_provider_row(self, name: str, api_base: str, api_key: str) -> None:
         row = self.providers.rowCount()
@@ -230,11 +337,15 @@ class SettingsDialog(QDialog):
             old = self.config["providers"].get(original_names.get(name, name), {})
             providers[name] = {**old, "api_base": api_base, "api_key": api_key}
         config["providers"] = providers
-        config["roles"] = {**config["roles"], **{role: form.value() for role, form in self.roles.items()}}
-        presets = parse_presets(self.presets.toPlainText(), self.config.get("manager_presets") or [])
-        for preset in presets:
-            preset["provider"] = renamed.get(preset["provider"], preset["provider"])
-        config["manager_presets"] = presets
+        self.profiles[self.profile_index] = self._shown_profile()
+        profiles = [{**p, "roles": {role: {**c, "provider": renamed.get(c.get("provider", ""), c.get("provider", ""))}
+                                    for role, c in p["roles"].items()}}
+                    for p in self.profiles]
+        duplicates = duplicate_labels(profiles)
+        if duplicates:
+            raise ValueError("Profiles are shown under the same name: "
+                             + ", ".join(f"'{d}'" for d in duplicates) + ". Give them different names.")
+        config = with_profiles(config, profiles, self.profile_index)
         config["openserp_base_url"] = self.openserp.text().strip()
         config["llm_timeout"] = self.timeout.value()
         config["llm_max_retries"] = self.retries.value()

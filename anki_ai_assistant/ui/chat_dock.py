@@ -9,8 +9,8 @@ from aqt.qt import (QComboBox, QDesktopServices, QDockWidget, QHBoxLayout, QKeyS
                     QPushButton, QShortcut, QSizePolicy, QTextBrowser, QToolButton, QUrl, QVBoxLayout, QWidget,
                     Qt)
 
-from ..core.config import load_config
-from ..core.context import NotesContext, manager_choices, model_label, task_with_context, with_manager
+from ..core.config import load_config, profile_choices, profile_label, with_profile
+from ..core.context import NotesContext, task_with_context
 from ..core.transcript import BROWSE_LINK, STEP_LINK, Transcript
 
 ADDON_DIR = Path(__file__).resolve().parent.parent
@@ -35,7 +35,7 @@ class ChatDock(QDockWidget):
 
         top = QHBoxLayout()
         self.model_picker = QComboBox(body)
-        self.model_picker.setToolTip("The assistant's model. Add more in the settings.")
+        self.model_picker.setToolTip("The model profile: the assistant's, image search and image check models. Save more in the settings (⚙).")
         self.model_picker.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.model_picker.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.model_picker.activated.connect(self._on_model_picked)
@@ -161,11 +161,11 @@ class ChatDock(QDockWidget):
     def _fill_model_picker(self) -> None:
         self.model_picker.clear()
         try:
-            choices = manager_choices(self._config())
+            choices = profile_choices(self._config())
         except (KeyError, TypeError, ValueError):
             return
         for choice in choices:
-            self.model_picker.addItem(model_label(choice.get("provider", ""), choice.get("model", "")), choice)
+            self.model_picker.addItem(profile_label(choice), choice)
         self.model_picker.setCurrentIndex(0)
 
     def _on_model_picked(self, index: int) -> None:
@@ -175,16 +175,13 @@ class ChatDock(QDockWidget):
         if self._busy():
             self.model_picker.setCurrentIndex(0)
             return
-        config = with_manager(self._config(), choice)
+        config = with_profile(self._config(), choice)
         self.mw.addonManager.writeConfig(self.addon_module, config)
         self._fill_model_picker()
         if self.runner is not None:
-            from ..core.models import build_model
-
             # Built from the saved config when the next request starts
-            self.runner.change_model(lambda: build_model(self._config(), "manager"))
-        label = model_label(choice["provider"], choice["model"])
-        self.transcript.add_notice(f"Model: {label}. It answers from the next request on.")
+            self.runner.change_models()
+        self.transcript.add_notice(f"Profile: {profile_label(choice)}. Its models answer from the next request on.")
         self._render(to_bottom=True)
 
     # Runner

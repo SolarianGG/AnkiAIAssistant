@@ -8,7 +8,8 @@
     "searcher": {"provider": "openrouter", "model": "google/gemma-4-31b-it:free", "reasoning_effort": "none", "max_steps": 20},
     "validator": {"provider": "ollama", "model": "qwen3.5:9b", "reasoning_effort": "none", "context_length": 0}
   },
-  "manager_presets": [],
+  "profile_name": "",
+  "profiles": [],
   "openserp_base_url": "",
   "llm_timeout": 180,
   "llm_max_retries": 2
