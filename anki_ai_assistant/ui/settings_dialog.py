@@ -23,13 +23,15 @@ REASONING_EFFORTS = ["", "none", "low", "medium", "high"]
 
 
 class RoleForm(QGroupBox):
-    def __init__(self, parent: QWidget, role: str, config: dict):
+    def __init__(self, parent: QWidget, role: str, config: dict, is_ollama: Callable[[str], bool]):
         super().__init__(ROLE_TITLES[role], parent)
         self.role = role
+        self._is_ollama = is_ollama
         self.config = dict(config)
         form = QFormLayout(self)
 
         self.provider = QComboBox(self)
+        self.provider.currentTextChanged.connect(lambda _text: self.update_context_visibility())
         form.addRow("Provider", self.provider)
         self.model = QLineEdit(self)
         self.model.setPlaceholderText("e.g. z-ai/glm-5.3-flash or qwen3.5:9b")
@@ -52,7 +54,8 @@ class RoleForm(QGroupBox):
         self.context_length.setSingleStep(4096)
         self.context_length.setSpecialValueText("server default")
         self.context_length.setToolTip("Ollama only, other providers ignore it. The assistant needs at least 16384 tokens, 32768 is better.")
-        form.addRow("Context length (Ollama)", self.context_length)
+        self.context_length_label = QLabel("Context length (Ollama)", self)
+        form.addRow(self.context_length_label, self.context_length)
 
         self.extra_body = QLineEdit(self)
         self.extra_body.setPlaceholderText('optional JSON, e.g. {"provider": {"order": ["fireworks"]}}')
@@ -73,6 +76,14 @@ class RoleForm(QGroupBox):
         self.context_length.setValue(int(config.get("context_length") or 0))
         extra = config.get("extra_body")
         self.extra_body.setText(json.dumps(extra, ensure_ascii=False) if extra else "")
+        self.update_context_visibility()
+
+    def update_context_visibility(self) -> None:
+        """Show the context length only for an Ollama provider: others have a fixed context.
+        A hidden value is kept, the add-on ignores it for other providers."""
+        visible = self._is_ollama(self.provider.currentText())
+        self.context_length_label.setVisible(visible)
+        self.context_length.setVisible(visible)
 
     def set_providers(self, names: list[str], renamed: dict[str, str]) -> None:
         current = self.provider.currentText() or self.config.get("provider", "")
@@ -83,6 +94,7 @@ class RoleForm(QGroupBox):
             # A provider that was renamed or removed stays visible, and saving reports it
             self.provider.addItem(current)
         self.provider.setCurrentText(current)
+        self.update_context_visibility()  # the provider's API base may have changed
 
     def value(self) -> dict:
         """The role config; raises ValueError for invalid extra fields JSON."""
@@ -146,7 +158,8 @@ class SettingsDialog(QDialog):
         models_tab = QWidget(self)
         models_layout = QVBoxLayout(models_tab)
         models_layout.addWidget(self._profile_box(models_tab))
-        self.roles = {role: RoleForm(models_tab, role, self.config["roles"].get(role, {})) for role in ROLES}
+        self.roles = {role: RoleForm(models_tab, role, self.config["roles"].get(role, {}), self._is_ollama_provider)
+                      for role in ROLES}
         for form in self.roles.values():
             models_layout.addWidget(form)
         for signal in (self.profile_name.textChanged, self.roles["manager"].model.textChanged,
@@ -315,6 +328,13 @@ class SettingsDialog(QDialog):
             if original and name and original != name:
                 renamed[original] = name
         return renamed
+
+    def _is_ollama_provider(self, name: str) -> bool:
+        """Whether the provider looks like Ollama: by its name or its API base (Ollama's default port)."""
+        for row_name, api_base, _ in self._provider_rows():
+            if row_name == name:
+                return "ollama" in name.lower() or "ollama" in api_base.lower() or ":11434" in api_base
+        return "ollama" in name.lower()
 
     def _refresh_providers(self) -> None:
         names = [name for name, _, _ in self._provider_rows() if name]
