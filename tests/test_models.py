@@ -31,23 +31,40 @@ def test_call_syntax_is_never_shown_as_the_answer(model, text):
         parse(model, text)
 
 
+def history(*texts):
+    return [ChatMessage(role=MessageRole.USER, content=text) for text in texts]
+
+
 def test_context_cut_by_the_server_is_an_error(model):
     from anki_ai_assistant.core.models import ContextOverflowError
 
-    model._check_context(3, 3275)
-    model._check_context(5, 7389)
-    # More messages but fewer tokens: the server dropped the start of the conversation
+    model._check_context(history("system", "task"), 3275)
+    model._check_context(history("system", "task", "step 1"), 7389)
+    # The same conversation and more, but fewer tokens: the server dropped its start
     with pytest.raises(ContextOverflowError, match="7389 to 4098"):
-        model._check_context(7, 4098)
+        model._check_context(history("system", "task", "step 1", "step 2"), 4098)
 
 
 def test_a_request_without_tools_is_not_compared_with_steps(model):
     """After the last step smolagents asks for the final answer without the tools: no schemas, fewer tokens."""
-    model._check_context(30, 16634, ("add_notes", "search_notes"))
-    model._check_context(32, 10939, ())
-    model._check_context(34, 17000, ("add_notes", "search_notes"))
+    model._check_context(history("system", "task", "step 1"), 16634, ("add_notes", "search_notes"))
+    model._check_context(history("system", "task", "step 1", "step 2"), 10939, ())
+    model._check_context(history("system", "task", "step 1", "step 2", "step 3"), 17000, ("add_notes", "search_notes"))
 
 
-def test_new_dialog_with_fewer_tokens_is_fine(model):
-    model._check_context(9, 7000)
-    model._check_context(2, 3000)  # fewer messages: a fresh history, not a cut one
+def test_unrelated_prompts_are_not_compared(model):
+    """One model serves many runs (image_searcher for each word, some in parallel threads): a shorter
+    unrelated prompt is not a cut one, even with as many messages."""
+    model._check_context(history("system", "find 'maison house french'", "step 1"), 2638)
+    model._check_context(history("system", "find 'chat (cat)'", "step 1"), 2636)
+    model._check_context(history("system"), 1000)
+    model._check_context(history("system", "find 'chat (cat)'", "step 1", "step 2"), 3000)
+
+
+def test_history_format_call_in_text(model):
+    """Models copy smolagents' history format, a Python literal instead of JSON."""
+    text = ("Calling tools:\n[{'id': 'call-1', 'type': 'function', 'function': "
+            "{'name': 'web_image_search', 'arguments': {'query': 'house', 'limit': 5}}}]")
+    assert parse(model, text) == ("web_image_search", {"query": "house", "limit": 5})
+    with pytest.raises(ValueError, match="could not be read"):
+        parse(model, "Calling tools:\n[{'id': 'call-1', 'function': {'name': 'web_im")

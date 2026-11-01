@@ -1,15 +1,19 @@
 """LLMs for the agent roles. Every provider (OpenRouter, Ollama, ...) is reached through its OpenAI-compatible API."""
 
+import ast
 import json
 import os
 import re
+import threading
 import uuid
+from collections import deque
 from typing import Any
 
 from smolagents import OpenAIServerModel
 from smolagents.models import ChatMessage, ChatMessageToolCall, ChatMessageToolCallFunction, MessageRole
 
 from .config import ConfigError
+from .history import is_native, native_to_dict
 
 
 class ProviderError(Exception):
@@ -20,11 +24,47 @@ class ContextOverflowError(Exception):
     """The server silently cut the conversation to fit the model's context window."""
 
 
-def _find_tool_call(text: str) -> tuple[str, Any] | None:
-    """Find a tool call written as JSON text: the first object with a "name", nested in lists or not.
+def _call_in(obj: Any) -> tuple[str, Any] | None:
+    """The first object with a "name" in obj, nested in lists or not, as (name, arguments)."""
+    if isinstance(obj, list):
+        for item in obj:
+            found = _call_in(item)
+            if found:
+                return found
+        return None
+    if not isinstance(obj, dict):
+        return None
+    if isinstance(obj.get("function"), dict):
+        obj = obj["function"]
+    if not isinstance(obj.get("name"), str):
+        return None
+    arguments = obj.get("arguments", obj.get("parameters", {}))
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            pass
+    return obj["name"], arguments
 
-    Free models write calls in many shapes, e.g. [[{"name": "final_answer", "parameters": {...}}]]
-    or {"type": "function", "function": {"name": ..., "arguments": "..."}}."""
+
+# How smolagents writes earlier calls into the history; models copy it, with Python quotes instead of JSON
+HISTORY_CALL_MARKER = "Calling tools:"
+
+
+def _find_tool_call(text: str) -> tuple[str, Any] | None:
+    """Find a tool call written as text: the first object with a "name", nested in lists or not.
+
+    Free models write calls in many shapes, e.g. [[{"name": "final_answer", "parameters": {...}}]],
+    {"type": "function", "function": {"name": ..., "arguments": "..."}}, or a copy of the history format
+    "Calling tools: [{'id': ..., 'function': {...}}]" as a Python literal."""
+    if HISTORY_CALL_MARKER in text:
+        literal = text.split(HISTORY_CALL_MARKER, 1)[1].strip()
+        try:
+            found = _call_in(ast.literal_eval(literal))
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            found = None
+        if found:
+            return found
     decoder = json.JSONDecoder()
     start = text.find("{")
     while start != -1:
@@ -33,18 +73,18 @@ def _find_tool_call(text: str) -> tuple[str, Any] | None:
         except json.JSONDecodeError:
             start = text.find("{", start + 1)
             continue
-        if isinstance(obj.get("function"), dict):
-            obj = obj["function"]
-        if isinstance(obj.get("name"), str):
-            arguments = obj.get("arguments", obj.get("parameters", {}))
-            if isinstance(arguments, str):
-                try:
-                    arguments = json.loads(arguments)
-                except json.JSONDecodeError:
-                    pass
-            return obj["name"], arguments
+        found = _call_in(obj)
+        if found:
+            return found
         start = text.find("{", start + 1)
     return None
+
+
+def _message_key(message: Any) -> str:
+    """A message's role and content, to tell whether one prompt continues another."""
+    if isinstance(message, dict):
+        return f"{message.get('role')}:{message.get('content')}:{message.get('tool_calls')}"
+    return f"{getattr(message, 'role', None)}:{getattr(message, 'content', None)}:{getattr(message, 'tool_calls', None)}"
 
 
 class AssistantModel(OpenAIServerModel):
@@ -67,30 +107,63 @@ class AssistantModel(OpenAIServerModel):
         client.chat.completions.create = checked_create
         return client
 
+    def _prepare_completion_kwargs(self, messages, *args, **kwargs):
+        """Messages of the native tool history (core/history.py) go to the API as they are; smolagents' cleaning
+        knows no "tool" role and would merge them. The other messages are cleaned by smolagents in runs."""
+        if not any(is_native(message) for message in messages):
+            return super()._prepare_completion_kwargs(messages, *args, **kwargs)
+        with_tools = bool(kwargs.get("tools_to_call_from"))
+        api_messages, plain = [], []
+
+        def flush():
+            if plain:
+                cleaned = super(AssistantModel, self)._prepare_completion_kwargs(list(plain), *args, **kwargs)
+                api_messages.extend(cleaned["messages"])
+                plain.clear()
+
+        for message in messages:
+            if is_native(message):
+                flush()
+                api_messages.append(native_to_dict(message, with_tools))
+            else:
+                plain.append(message)
+        flush()
+        completion_kwargs = super()._prepare_completion_kwargs([], *args, **kwargs)
+        completion_kwargs["messages"] = api_messages
+        return completion_kwargs
+
     def generate(self, messages, *args, **kwargs):
         response = super().generate(messages, *args, **kwargs)
         tools = tuple(sorted(t.name for t in kwargs.get("tools_to_call_from") or []))
-        self._check_context(len(messages), response.token_usage.input_tokens if response.token_usage else None, tools)
+        self._check_context(messages, response.token_usage.input_tokens if response.token_usage else None, tools)
         return response
 
-    def _check_context(self, message_count: int, prompt_tokens: int | None, tools: tuple = ()) -> None:
+    def _check_context(self, messages: list, prompt_tokens: int | None, tools: tuple = ()) -> None:
         """Fail clearly when the server cut the conversation to fit the model's context window.
 
         Servers like Ollama drop the start of a prompt that is too long without any error: the model loses
-        its instructions and tools and answers nonsense. Within a dialog the history only grows,
-        so fewer prompt tokens for at least as many messages means the server cut it.
+        its instructions and tools and answers nonsense. A prompt that continues an earlier one (the same
+        messages and then more) cannot have fewer tokens, unless the server cut it.
 
-        Only requests with the same tools are compared: their schemas are part of the prompt. smolagents asks
+        Only continuations are compared: one model serves several agent runs, some of them at the same time
+        (the manager calls image_searcher for several words in one step), and their prompts are unrelated.
+        Only requests with the same tools are compared too: their schemas are part of the prompt. smolagents asks
         for the final answer after the last step without tools, and that prompt is ~5k tokens shorter."""
         if prompt_tokens is None:
             return
-        last_prompts = self.__dict__.setdefault("_last_prompts", {})
-        last = last_prompts.get(tools)
-        last_prompts[tools] = (message_count, prompt_tokens)
-        if last is not None and message_count >= last[0] and prompt_tokens < last[1]:
+        keys = tuple(_message_key(message) for message in messages)
+        state = self.__dict__.setdefault("_context_state", {"lock": threading.Lock(), "prompts": deque(maxlen=32)})
+        with state["lock"]:
+            cut_from = None
+            for old_tools, old_keys, old_tokens in state["prompts"]:
+                if (old_tools == tools and len(old_keys) < len(keys) and keys[:len(old_keys)] == old_keys
+                        and prompt_tokens < old_tokens):
+                    cut_from = max(cut_from or 0, old_tokens)
+            state["prompts"].append((tools, keys, prompt_tokens))
+        if cut_from is not None:
             raise ContextOverflowError(
                 f"The conversation no longer fits the model's context window: the server cut it "
-                f"from {last[1]} to {prompt_tokens} tokens. Start a new dialog, or give the model a larger context "
+                f"from {cut_from} to {prompt_tokens} tokens. Start a new dialog, or give the model a larger context "
                 f"(for Ollama set context_length of the role in the add-on config, e.g. 32768).")
 
     def parse_tool_calls(self, message: ChatMessage) -> ChatMessage:
@@ -112,7 +185,7 @@ class AssistantModel(OpenAIServerModel):
         return super().parse_tool_calls(message)
 
 
-_CALL_MARKERS = ("<tool_call", "<function", "<|tool")
+_CALL_MARKERS = ("<tool_call", "<function", "<|tool", HISTORY_CALL_MARKER)
 # Tags of call syntax, opening or closing: "</tool_call>", "<|tool_calls_end|>", "<function=list_decks>"
 _CALL_TAG = re.compile(r"</?\s*(?:tool_calls?|function)\b[^>]*>?|<\|[^>]*?\|>")
 # A word of at least two letters or digits, in any script

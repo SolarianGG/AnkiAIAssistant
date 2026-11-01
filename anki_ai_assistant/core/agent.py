@@ -1,11 +1,13 @@
 import importlib.resources
+import json
 from pathlib import Path
 from typing import Any
 
 import yaml
 from smolagents import LogLevel, Tool, ToolCallingAgent
-from smolagents.utils import AgentToolCallError, AgentToolExecutionError
+from smolagents.utils import AgentGenerationError, AgentToolCallError, AgentToolExecutionError
 
+from .history import NativeToolHistory
 from .checks import WRITE_RISKS, check_answer_has_text, check_changes_made
 from .models import build_model
 from .prompts import ASSISTANT_INSTRUCTIONS
@@ -21,7 +23,20 @@ def describe_inputs(tool: Any) -> str:
     return f"{tool.name} takes only these arguments: {', '.join(names)}."
 
 
-class AssistantAgent(ToolCallingAgent):
+# The same failing call this many times in one request: the model is stuck, stop instead of burning all steps
+MAX_SAME_FAILED_CALLS = 3
+# The same call with the same result this many times: also stuck (e.g. a search that keeps finding nothing).
+# From the second time on the result tells the model it repeats itself
+MAX_SAME_RESULTS = 4
+REPEAT_NOTE = ("\n(You already made this exact call in this request and got this same result. Do not repeat it: "
+               "change the call, use another tool, or answer the user.)")
+
+
+class RepeatedCallError(AgentGenerationError):
+    """The model keeps repeating a call that fails the same way."""
+
+
+class AssistantAgent(NativeToolHistory, ToolCallingAgent):
     """ToolCallingAgent whose failed tool calls are results of those calls, not errors of the whole step.
 
     smolagents records a step's tool calls only after all of them succeed. When one fails, e.g. on an argument
@@ -29,13 +44,45 @@ class AssistantAgent(ToolCallingAgent):
     the calls that ran next to it. Then models repeat the same wrong call over and over. As a result of the call,
     the error stays next to the call in the history.
 
-    Also counts the write tools that succeeded in the current request, for check_changes_made."""
+    Also counts the write tools that succeeded in the current request, for check_changes_made,
+    and stops the request when the model repeats one failing call MAX_SAME_FAILED_CALLS times."""
 
     request_writes = 0
 
     def run(self, *args, **kwargs):
         self.request_writes = 0
+        self._failed_calls: dict[str, int] = {}
+        self._same_results: dict[str, int] = {}
         return super().run(*args, **kwargs)
+
+    @staticmethod
+    def _call_key(tool_name: str, arguments: Any) -> str:
+        try:
+            return tool_name + json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            return tool_name + repr(arguments)
+
+    def _repeated(self, tool_name: str, arguments: Any, result: Any) -> Any:
+        key = self._call_key(tool_name, arguments) + "\0" + str(result)
+        seen = self.__dict__.setdefault("_same_results", {})
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] >= MAX_SAME_RESULTS:
+            raise RepeatedCallError(
+                f"The model made the same call of {tool_name} {seen[key]} times with the same result "
+                "and was stopped.", self.logger)
+        if seen[key] > 1 and isinstance(result, str):
+            return result + REPEAT_NOTE
+        return result
+
+    def _failed(self, tool_name: str, arguments: Any, error: str) -> str:
+        key = self._call_key(tool_name, arguments)
+        failed = self.__dict__.setdefault("_failed_calls", {})
+        failed[key] = failed.get(key, 0) + 1
+        if failed[key] >= MAX_SAME_FAILED_CALLS:
+            raise RepeatedCallError(
+                f"The model made the same failing call of {tool_name} {failed[key]} times and was stopped. "
+                f"The error was: {error.removeprefix(TOOL_ERROR_PREFIX)}", self.logger)
+        return error
 
     def execute_tool_call(self, tool_name: str, arguments: Any) -> Any:
         try:
@@ -46,14 +93,17 @@ class AssistantAgent(ToolCallingAgent):
                 raise
             tool = self.tools.get(tool_name) or self.managed_agents.get(tool_name)
             hint = f" {describe_inputs(tool)}" if tool is not None else ""
-            return f"{TOOL_ERROR_PREFIX}the call was not run: {e}.{hint} Fix the call before trying again."
+            return self._failed(tool_name, arguments,
+                                f"{TOOL_ERROR_PREFIX}the call was not run: {e}.{hint} Fix the call before trying again.")
         except AgentToolExecutionError as e:
             if tool_name == "final_answer":
                 raise
-            return f"{TOOL_ERROR_PREFIX}{e}"
+            return self._failed(tool_name, arguments, f"{TOOL_ERROR_PREFIX}{e}")
         if getattr(self.tools.get(tool_name), "risk", "read") in WRITE_RISKS:
             self.request_writes += 1
-        return result
+        if tool_name == "final_answer":
+            return result
+        return self._repeated(tool_name, arguments, result)
 
 
 def build_agent(config: dict[str, Any], tools: list[Tool], download_dir: Path, cache_dir: Path | None = None,

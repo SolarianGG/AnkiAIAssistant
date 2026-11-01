@@ -113,14 +113,26 @@ def test_collection_stats(service, german):
     assert stats["due_today"]["new"] == 4
 
 
+def test_unquoted_names_with_spaces_are_quoted(service, col, german):
+    """Models repeated deck:Test French nine times despite the hint: the tool quotes an existing name itself."""
+    from conftest import add_note
+
+    add_note(col, "Test German", Front="Haus", Back="house")
+    result = call(SearchNotesTool, service, query="deck:Test German Haus")
+    assert result["total"] == 1 and result["query_used"] == '"deck:Test German" Haus'
+    assert call(SearchNotesTool, service, query="note:Basic (and reversed card)")["total"] == 0
+    result = call(SearchNotesTool, service, query="note:Basic tag:nouns")
+    assert "query_used" not in result and result["total"] == 2
+
+
 def test_an_empty_search_names_the_unknown_deck(service, col, german):
     from conftest import add_note
 
     add_note(col, "Test German", Front="Haus", Back="house")
     add_note(col, 'Polish::01. Nouns ("Rzeczowniki")', Front="dom", Back="house")
 
-    # Without quotes Anki reads deck 'Test' and the word 'German'
-    result = call(SearchNotesTool, service, query="deck:Test German")
+    # Without quotes Anki reads deck 'Test' and the word 'Germn': nothing is named so
+    result = call(SearchNotesTool, service, query="deck:Test Germn")
     assert result["total"] == 0
     assert "No deck is named 'Test'" in result["hint"] and '"deck:Test German"' in result["hint"]
 

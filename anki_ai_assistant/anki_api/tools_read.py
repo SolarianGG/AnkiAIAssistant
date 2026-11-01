@@ -175,7 +175,8 @@ class SearchNotesTool(AnkiReadTool):
         field_limit = None if full_fields else FIELD_PREVIEW_CHARS
 
         def run(col: Collection) -> dict:
-            note_ids = sorted(col.find_notes(query))
+            used = quote_names(col, query)
+            note_ids = sorted(col.find_notes(used))
             page = note_ids[offset:offset + limit]
             notes = []
             for note_id in page:
@@ -190,6 +191,10 @@ class SearchNotesTool(AnkiReadTool):
                                for name, value in note.items()},
                 })
             result = {"total": len(note_ids), "offset": offset, "notes": notes}
+            if used != query:
+                result["query_used"] = used
+                result["note"] = ("Names with spaces must be quoted in Anki search, so the query was run as "
+                                  f"{used}. Quote such names yourself next time.")
             if offset + len(page) < len(note_ids):
                 result["next_offset"] = offset + len(page)
             if not note_ids:
@@ -199,6 +204,31 @@ class SearchNotesTool(AnkiReadTool):
             return result
 
         return _json(self.read(run))
+
+
+# An unquoted deck: or note: term and the words after it, which may be the rest of a name with spaces
+UNQUOTED_NAME = re.compile(r'(?<![\w":])(deck|note):([^\s"():]+(?:[ \t]+[^\s":-][^\s":]*)*)', re.IGNORECASE)
+
+
+def quote_names(col: Collection, query: str) -> str:
+    """Quote deck and note type names with spaces that the model left unquoted.
+
+    Anki reads deck:Test French as the deck 'Test' and the word 'French': the search found nothing, and models
+    repeated it many times despite the hint. When the words after deck: (note:) start with the full name of
+    an existing deck (note type), the longest such name is quoted."""
+    names = {"deck": {n.lower() for n in (d.name for d in col.decks.all_names_and_ids())},
+             "note": {n.lower() for n in (m.name for m in col.models.all_names_and_ids())}}
+
+    def fix(match: re.Match) -> str:
+        kind, words = match.group(1), match.group(2).split()
+        for count in range(len(words), 1, -1):
+            name = " ".join(words[:count])
+            if name.lower() in names[kind.lower()]:
+                rest = " ".join(words[count:])
+                return f'"{kind}:{name}"' + (f" {rest}" if rest else "")
+        return match.group(0)
+
+    return UNQUOTED_NAME.sub(fix, query)
 
 
 # deck:name in a query: "deck:A B", deck:"A B" or deck:A (up to the next space)

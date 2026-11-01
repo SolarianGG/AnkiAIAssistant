@@ -121,6 +121,24 @@ def test_add_tags(service, col, german):
         AddTagsTool(service)(note_ids=[german["hund"], 42], tags=["x"])
 
 
+def test_add_and_update_notes_need_media_in_the_collection(service, col, german):
+    col.media.write_data("hund.jpg", b"jpeg data")
+    tool = AddNotesTool(service)
+    for back in ['<img src="</body>">', '<img src="&lt;/body">', '<img src="https://example.com/x.jpg">',
+                 "<img src='katze.jpg'>", "[sound:katze.mp3]"]:
+        with pytest.raises(Exception, match="not in the collection"):
+            tool(deck="German::Nouns", notes=[{"Front": "das Pferd", "Back": back}])
+    assert col.note_count() == 4
+
+    added = call(tool, deck="German::Nouns", notes=[{"Front": "das Pferd", "Back": 'horse <IMG class=x SRC="hund.jpg">'}])
+    note_id = added["added"][0]["id"]
+    with pytest.raises(Exception, match="not in the collection"):
+        UpdateNotesTool(service)(notes=[{"id": note_id, "fields": {"Back": "<img src=katze.jpg>"}}])
+    with pytest.raises(Exception, match="cut at a quote"):
+        UpdateNotesTool(service)(notes=[{"id": note_id, "fields": {"Back": "<img src="}}])
+    call(UpdateNotesTool(service), notes=[{"id": note_id, "fields": {"Back": "<img src=hund.jpg>"}}])
+
+
 def test_store_media_from_download_dir(service, col, tmp_path):
     downloads = tmp_path / "downloads"
     downloads.mkdir()
@@ -129,7 +147,10 @@ def test_store_media_from_download_dir(service, col, tmp_path):
     tool = StoreMediaTool(service, downloads)
 
     first = call(tool, source=str(downloads / "hund.jpg"))
-    assert first == {"filename": "hund.jpg", "html": '<img src="hund.jpg">', "bytes": len(jpeg)}
+    # No quotes: models leave them unescaped in JSON arguments, and the field came out cut as '<img src='
+    assert first == {"filename": "hund.jpg", "html": "<img src=hund.jpg>", "bytes": len(jpeg)}
+    # Anki (Check Media, sync) still sees the file as used
+    assert col.media.files_in_str(col.models.by_name("Basic")["id"], first["html"]) == ["hund.jpg"]
     assert col.media.have("hund.jpg")
 
     (downloads / "other.jpg").write_bytes(image_bytes((300, 100), fmt="JPEG"))

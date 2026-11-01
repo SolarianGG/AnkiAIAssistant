@@ -58,7 +58,8 @@ def check_field_names(note_type: dict, names) -> None:
     unknown = [n for n in names if n not in known]
     if unknown:
         raise AnkiToolError(f"Note type '{note_type['name']}' has no field(s) {', '.join(map(repr, unknown))}. "
-                            f"Its fields are: {', '.join(known)}.")
+                            f"Its fields are: {', '.join(known)}. Use exactly these names, or to have other fields "
+                            "create a note type with them (create_note_type) and pass it as note_type.")
 
 
 def select_notes(col: Collection, note_ids: list | None, query: str | None, limit: int) -> list[int]:

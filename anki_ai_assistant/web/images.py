@@ -2,6 +2,7 @@
 
 import importlib.resources
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from smolagents import Model, Tool, ToolCallingAgent
 from smolagents.agents import RunResult, populate_template
 from smolagents.models import ChatMessage, MessageRole
 
+from ..core.history import NativeToolHistory
 from .download import DownloadFileTool
 from .net import WebCache
 from .search import OpenSERPWebPageSearchTool, WebImageSearchTool
@@ -62,30 +64,69 @@ class SearcherFinalAnswerTool(Tool):
 
     def forward(self, word: str, image_url: str | None = None, image_path: str | None = None,
                 error: str | None = None) -> dict:
-        if error:
-            return {"word": word, "error": error}
-        return {"word": word, "image_url": image_url, "image_path": image_path}
+        image_url, image_path, error = _given(image_url), _given(image_path), _given(error)
+        # Models fill every argument, e.g. error="None" next to a found image: the image wins
+        if image_path or not error:
+            return {"word": word, "image_url": image_url, "image_path": image_path}
+        return {"word": word, "error": error}
 
 
-class DictManagedAgent(ToolCallingAgent):
+def _given(value: Any) -> str | None:
+    """None for an argument the model left empty in words: "", "None", "null", "n/a"."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return None if text.lower() in ("", "none", "null", "n/a", "-") else text
+
+
+class DictManagedAgent(NativeToolHistory, ToolCallingAgent):
     """A managed agent that hands its final_answer to the manager as is.
 
     smolagents wraps a managed agent's answer into "Here is the final answer from your managed agent ...: {...}",
-    and the manager then wastes steps parsing the dict back out of that text."""
+    and the manager then wastes steps parsing the dict back out of that text.
+
+    The manager often calls it for several words in one step, and smolagents runs such calls in parallel threads
+    on this one agent: they shared its memory and step counter, mixed their histories and broke smolagents' loop
+    ("cannot access local variable 'final_answer'"). So the calls run one after another."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._call_lock = threading.Lock()
 
     def __call__(self, task: str, **kwargs):
-        # Kept for the image validator, which needs the word as the manager asked it
-        self.manager_task = task
-        full_task = populate_template(self.prompt_templates["managed_agent"]["task"],
-                                      variables=dict(name=self.name, task=task))
-        result = self.run(full_task, **kwargs)
+        with self._call_lock:
+            # Kept for the image validator, which needs the word as the manager asked it
+            self.manager_task = task
+            full_task = populate_template(self.prompt_templates["managed_agent"]["task"],
+                                          variables=dict(name=self.name, task=task))
+            result = self.run(full_task, **kwargs)
         answer = result.output if isinstance(result, RunResult) else result
         if isinstance(answer, str):
             try:
                 answer = json.loads(answer)
             except json.JSONDecodeError:
                 pass
+        if not isinstance(answer, dict):
+            # After max_steps smolagents asks the model for an answer without tools: free text, or a list of
+            # text parts. As the result it looked like a call or an image to the manager
+            # The model's own words then are often a call written as text: the manager needs the real reasons
+            answer = {"word": task, "error": "image_searcher used all its steps without an image. "
+                                             + (self._last_errors() or "No errors were reported.")}
         return answer
+
+    def _last_errors(self, count: int = 3) -> str:
+        """The last distinct errors of the run: failed downloads, rejected images."""
+        errors = []
+        for step in reversed(getattr(self.memory, "steps", [])):
+            error = getattr(step, "error", None)
+            if error is None or "max steps" in str(error).lower():
+                continue
+            text = str(error).strip().replace("\n", " ")[:250]
+            if text not in errors:
+                errors.append(text)
+            if len(errors) == count:
+                break
+        return " Last errors: " + " | ".join(reversed(errors)) if errors else ""
 
 
 def _searcher_prompt_templates() -> dict:
@@ -115,9 +156,18 @@ Give a short reason and the verdict YES or NO."""
 
 ANSWER_FORMAT_ERROR = "final_answer must be a dict with keys 'word', 'image_url', 'image_path', or 'word' and 'error'."
 
+# Searches without a single download after which giving up is accepted: the search finds nothing usable
+GIVE_UP_AFTER_SEARCHES = 3
 
-def make_image_validator(model: Model):
+
+def _tool_calls(memory: Any) -> list[str]:
+    """Names of the tools the agent called in this run (the step being checked is not in memory yet)."""
+    return [call.name for step in getattr(memory, "steps", []) for call in (getattr(step, "tool_calls", None) or [])]
+
+
+def make_image_validator(model: Model, download_dir: Path):
     """Build a final_answer check for image_searcher. It raises with a reason the agent can act upon."""
+    download_dir = Path(download_dir).resolve()
 
     def validate_image(final_answer: Any, memory: Any, agent: Any = None) -> bool:
         if isinstance(final_answer, str):
@@ -129,9 +179,18 @@ def make_image_validator(model: Model):
                                                       or "error" in final_answer):
             raise ValueError(ANSWER_FORMAT_ERROR)
         if "error" in final_answer:
-            # Let the searcher give up and report to the manager instead of looping until max_steps
-            return True
+            # Let the searcher give up and report to the manager instead of looping until max_steps,
+            # but only after it really tried: models give up with an invented reason before any download
+            calls = _tool_calls(memory)
+            if "download_file" in calls or calls.count("web_image_search") >= GIVE_UP_AFTER_SEARCHES:
+                return True
+            raise ValueError("Do not give up yet: call web_image_search, then download_file with a result's "
+                             "image_url (or its thumbnail_url), and answer with the path download_file returns.")
         word, path = final_answer["word"], final_answer["image_path"]
+        # Models invent paths like /tmp/x.jpg instead of downloading
+        if not path or not Path(path).resolve().is_relative_to(download_dir) or not Path(path).is_file():
+            raise ValueError(f"'{path}' is not a downloaded file. Call download_file with the image_url and a "
+                             "filename, and pass exactly the path it returns as image_path.")
 
         try:
             image = Image.open(path)
@@ -183,6 +242,6 @@ def build_image_searcher(model: Model, validator_model: Model, download_dir: Pat
         instructions=SEARCHER_INSTRUCTIONS,
         prompt_templates=_searcher_prompt_templates(),
         max_steps=max_steps,
-        final_answer_checks=[make_image_validator(validator_model)],
+        final_answer_checks=[make_image_validator(validator_model, download_dir)],
         verbosity_level=verbosity_level,
     )

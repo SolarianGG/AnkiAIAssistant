@@ -104,7 +104,36 @@ def test_a_wrong_call_stays_next_to_its_error_with_the_valid_arguments(service, 
     ])
     assert agent.run("What decks?") == "One deck."
     prompt = model.prompts[1]
-    assert "'arguments': {'limit': '10'}" in prompt and "list_decks takes no arguments" in prompt
+    assert '"arguments": {"limit": "10"}' in prompt and "list_decks takes no arguments" in prompt
+
+
+def test_the_history_goes_to_the_api_as_native_tool_calls(service, tmp_path):
+    """Calls written as "Calling tools: [...]" text taught models to write calls as text; native calls do not."""
+    agent, model = make_agent(service, tmp_path, [
+        ("list_decks", {}), ("search_notes", {"query": "deck:German"}), ("final_answer", {"answer": "One deck."}),
+        ("final_answer", {"answer": "One deck."})])
+    agent.run("What decks?")
+    tools = list(agent.tools.values())
+    api = AssistantModel._prepare_completion_kwargs(
+        model, messages=agent.write_memory_to_messages(), tools_to_call_from=tools)["messages"]
+    assert "Calling tools" not in json.dumps(api, default=str)
+    roles = [m["role"] for m in api]
+    assert roles[:2] == ["system", "user"] and roles[2:6] == ["assistant", "tool", "assistant", "tool"]
+    assert "Calling tools" not in json.dumps(api[:6], default=str)
+    call = api[2]["tool_calls"][0]
+    assert call["function"] == {"name": "list_decks", "arguments": "{}"} and api[3]["tool_call_id"] == call["id"]
+
+    # Without tools (the last answer after max_steps) the calls are plain prose
+    plain = AssistantModel._prepare_completion_kwargs(model, messages=agent.write_memory_to_messages())["messages"]
+    assert all(m["role"] in ("system", "user", "assistant") and "tool_calls" not in m for m in plain)
+
+
+def test_the_same_failing_call_stops_the_request(service, tmp_path):
+    from anki_ai_assistant.core.agent import RepeatedCallError
+
+    agent, _ = make_agent(service, tmp_path, [("add_notes", {"deck": "Nope", "notes": [{"Front": "x"}]})] * 3)
+    with pytest.raises(RepeatedCallError, match="same failing call of add_notes 3 times"):
+        agent.run("Add a card")
 
 
 def test_a_failed_write_does_not_count_as_a_change(service, tmp_path):
@@ -140,3 +169,12 @@ def test_markup_answer_after_a_write_goes_back_to_the_model(service, tmp_path):
     ])
     assert agent.run("Create the deck German") == "Created the deck German."
     assert EMPTY_ANSWER_MESSAGE in model.prompts[2]
+
+
+def test_the_same_result_again_is_pointed_out_then_stops_the_request(service, tmp_path):
+    from anki_ai_assistant.core.agent import REPEAT_NOTE, RepeatedCallError
+
+    agent, model = make_agent(service, tmp_path, [("search_notes", {"query": "deck:Nope"})] * 4)
+    with pytest.raises(RepeatedCallError, match="same call of search_notes 4 times with the same result"):
+        agent.run("Find my notes")
+    assert REPEAT_NOTE.strip()[:40] in model.prompts[2] and REPEAT_NOTE.strip()[:40] not in model.prompts[1]

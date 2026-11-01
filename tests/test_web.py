@@ -272,3 +272,61 @@ def test_fetch_asks_a_busy_server_again(monkeypatch):
     answers[:] = [503, 503, 503]
     with pytest.raises(RuntimeError, match="busy"):
         net.fetch("https://x/a.mp3")
+
+
+def test_searcher_final_answer_ignores_none_written_as_text():
+    from anki_ai_assistant.web.images import SearcherFinalAnswerTool
+
+    tool = SearcherFinalAnswerTool()
+    assert tool(word="dog", image_url="u", image_path="p.jpg", error="None") == {
+        "word": "dog", "image_url": "u", "image_path": "p.jpg"}
+    assert tool(word="dog", image_path="null", error="no image") == {"word": "dog", "error": "no image"}
+
+
+def test_image_validator_wants_a_real_download_and_a_real_try(tmp_path):
+    from types import SimpleNamespace
+
+    import pytest
+    from smolagents.memory import ToolCall
+
+    from anki_ai_assistant.web.images import make_image_validator
+
+    validate = make_image_validator(model=None, download_dir=tmp_path)
+
+    def memory(*names):
+        return SimpleNamespace(steps=[SimpleNamespace(tool_calls=[ToolCall(name=n, arguments={}, id=n)]) for n in names])
+
+    # An invented path, not one download_file returned
+    with pytest.raises(ValueError, match="not a downloaded file"):
+        validate({"word": "dog", "image_url": "u", "image_path": "/tmp/NationalGeographic_2733106.jpg"},
+                 memory("web_image_search", "download_file"))
+    # Giving up before any download
+    with pytest.raises(ValueError, match="Do not give up"):
+        validate({"word": "dog", "error": "The image download failed"}, memory("web_image_search"))
+    assert validate({"word": "dog", "error": "403"}, memory("web_image_search", "download_file"))
+    assert validate({"word": "dog", "error": "nothing found"}, memory(*["web_image_search"] * 3))
+
+
+def test_searcher_out_of_steps_reports_its_real_errors():
+    """After max_steps the model's own words were a call written as text; the manager needs the reasons."""
+    import threading
+    from types import SimpleNamespace
+
+    from anki_ai_assistant.web.images import DictManagedAgent
+
+    class Fake(DictManagedAgent):
+        def __init__(self):
+            self._call_lock = threading.Lock()
+            self.name = "image_searcher"
+            self.prompt_templates = {"managed_agent": {"task": "{{task}}"}}
+            self.memory = SimpleNamespace(steps=[SimpleNamespace(error="403 Forbidden for car.jpg"),
+                                                 SimpleNamespace(error=None),
+                                                 SimpleNamespace(error="Image validator rejected red_car.jpg: a toy"),
+                                                 SimpleNamespace(error="Reached max steps.")])
+
+        def run(self, task, **kwargs):
+            return '(I used the tool download_file with {"url": "https://x/car.jpg"}.)'
+
+    answer = Fake()("voiture (car)")
+    assert answer["word"] == "voiture (car)" and "used all its steps" in answer["error"]
+    assert "403 Forbidden" in answer["error"] and "a toy" in answer["error"] and "I used the tool" not in answer["error"]

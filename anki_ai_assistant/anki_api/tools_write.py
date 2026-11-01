@@ -4,6 +4,8 @@ and the collection is backed up before the first one.
 
 Each tool checks its input before it calls service.write(), so a wrong call leaves no empty undo step."""
 
+import html
+import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -116,6 +118,7 @@ class AddNotesTool(AnkiWriteTool):
             deck_id = find_deck(col, deck)["id"]
             model = find_note_type(col, note_type or "Basic")
             check_field_names(model, {name for note in notes for name in note})
+            _check_media(col, [value for note in notes for value in note.values()])
             ready, skipped, first_fields = [], [], set()
             for index, fields in enumerate(notes):
                 note = col.new_note(model)
@@ -184,6 +187,7 @@ class UpdateNotesTool(AnkiWriteTool):
                 note = _get_note(col, note_id)
                 check_field_names(note.note_type(), fields)
                 changed_names = [name for name, value in fields.items() if note[name] != value]
+                _check_media(col, [fields[name] for name in changed_names])
                 if changed_names:
                     changed[note_id] = changed_names
                     if len(diff) < 90:
@@ -212,6 +216,42 @@ class UpdateNotesTool(AnkiWriteTool):
             self.write(f"edit {_plural(len(changed), 'note')}", update)
         return to_json({"updated": [{"id": i, "fields": names} for i, names in changed.items()],
                         "unchanged": [i for i in changes if i not in changed]})
+
+
+_IMG_SRC = re.compile(r"""<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*))""", re.IGNORECASE)
+_SOUND = re.compile(r"\[sound:([^\]]*)\]")
+
+
+def _img_tag(filename: str) -> str:
+    """<img src=hund.jpg>, without quotes when the name allows (Anki reads unquoted src too).
+
+    Models copy the html into a JSON string argument and often leave its quotes unescaped: the field then came
+    out cut at the first quote, as '<img src='."""
+    return f"<img src={filename}>" if re.fullmatch(r"[\w.\-]+", filename) else f"<img src='{filename}'>"
+
+
+def _check_media(col: Collection, values) -> None:
+    """Every <img src> and [sound:] in the values must name a file in the collection media.
+
+    Models put a URL, a local path or garbage like <img src="</body>"> into a field instead of the html
+    store_media returned: the card then shows a broken image. The error goes back to the model to fix the call."""
+    missing = []
+    for value in values:
+        text = str(value or "")
+        names = [next(g for g in m.groups() if g is not None) for m in _IMG_SRC.finditer(text)]
+        names += [m.group(1) for m in _SOUND.finditer(text)]
+        for name in names:
+            name = html.unescape(name).strip()
+            if not name or "/" in name or "\\" in name or "<" in name or not col.media.have(name):
+                missing.append(name)
+    if "" in missing:
+        raise AnkiToolError(
+            "A field has an <img src=...> without a file name: the value was cut at a quote. Write the html "
+            "without quotes, exactly as store_media returned it, e.g. <img src=hund.jpg>.")
+    if missing:
+        raise AnkiToolError(
+            f"These media files are not in the collection: {sorted(set(missing))}. Store each file with store_media "
+            "and put exactly the html it returns into the field; leave the field empty if no media was found.")
 
 
 def _get_note(col: Collection, note_id: int):
@@ -260,7 +300,7 @@ class StoreMediaTool(AnkiWriteTool):
     description = (
         "Store an image or audio file in the collection media, from a file found by image_searcher or from a URL "
         "(e.g. an 'audio' url from dictionary_lookup). Images are shrunk to card size. Returns the stored filename (Anki may rename it) and the HTML to put into a note field: "
-        "<img src=\"file.jpg\"> for an image, [sound:file.mp3] for audio. "
+        "<img src=file.jpg> for an image, [sound:file.mp3] for audio. Copy it into the field as it is. "
         "Media is not undone by Edit > Undo, but files no note uses are removed by Tools > Check Media."
     )
     inputs = {
@@ -307,7 +347,7 @@ class StoreMediaTool(AnkiWriteTool):
             raise AnkiToolError(str(e))
         # Not an undoable operation, so no undo step: Anki keeps media outside the undo history
         stored = self.read(lambda col: col.media.write_data(name, data))
-        html = f'<img src="{stored}">' if extension in IMAGE_EXTENSIONS else f"[sound:{stored}]"
+        html = _img_tag(stored) if extension in IMAGE_EXTENSIONS else f"[sound:{stored}]"
         return to_json({"filename": stored, "html": html, "bytes": len(data)})
 
 
