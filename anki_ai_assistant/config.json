@@ -1,0 +1,12 @@
+{
+  "providers": {
+    "openrouter": {"api_base": "https://openrouter.ai/api/v1", "api_key": ""},
+    "ollama": {"api_base": "http://localhost:11434/v1", "api_key": "ollama"}
+  },
+  "roles": {
+    "manager": {"provider": "openrouter", "model": "", "max_steps": 20},
+    "searcher": {"provider": "ollama", "model": "qwen3.5:9b", "max_steps": 20},
+    "validator": {"provider": "ollama", "model": "qwen3.5:9b"}
+  },
+  "llm_timeout": 180
+}
