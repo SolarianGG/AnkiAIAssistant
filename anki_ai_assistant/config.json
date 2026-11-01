@@ -4,9 +4,11 @@
     "ollama": {"api_base": "http://localhost:11434/v1", "api_key": "ollama"}
   },
   "roles": {
-    "manager": {"provider": "openrouter", "model": "", "max_steps": 20},
-    "searcher": {"provider": "ollama", "model": "qwen3.5:9b", "max_steps": 20},
-    "validator": {"provider": "ollama", "model": "qwen3.5:9b"}
+    "manager": {"provider": "openrouter", "model": "nvidia/nemotron-3-ultra-550b-a55b:free", "reasoning_effort": "", "max_steps": 20},
+    "searcher": {"provider": "openrouter", "model": "google/gemma-4-31b-it:free", "reasoning_effort": "none", "max_steps": 20},
+    "validator": {"provider": "ollama", "model": "qwen3.5:9b", "reasoning_effort": "none"}
   },
-  "llm_timeout": 180
+  "openserp_base_url": "http://localhost:7000",
+  "llm_timeout": 180,
+  "llm_max_retries": 2
 }

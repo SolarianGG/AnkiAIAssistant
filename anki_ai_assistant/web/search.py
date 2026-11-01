@@ -1,8 +1,7 @@
+"""Web and image search through a self-hosted OpenSERP server."""
+
 from openserp import OpenSERP, SERPError
-from smolagents import Tool, tool
-import httpx
-import time
-from pathlib import Path
+from smolagents import Tool
 
 
 class OpenSERPWebPageSearchTool(Tool):
@@ -76,50 +75,3 @@ class OpenSERPImageSearchTool(Tool):
             for r in resp.results or []
             if r.image and r.image.url
         ]
-
-
-# A good image downloads in 1-3 s; slow hosts used to hang for the full 30 s, so it's better to skip them
-MAX_DOWNLOAD_TIMEOUT = 10.0
-# A flashcard needs a few hundred KB; multi-MB originals (e.g. pexels' dl= links) trickle in for minutes
-MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
-
-
-@tool
-def download_file_tool(url: str, filename: str, timeout: float = MAX_DOWNLOAD_TIMEOUT) -> str:
-    """Download a file from a url and return it as a path string
-
-    Args:
-        url: The file url to download.
-        filename: The path of the file to create after downloading, e.g. 'images/hund.jpg'.
-        timeout: Total time limit in seconds for the whole download (default and maximum: 10).
-
-    Returns:
-        The file path of the downloaded file.
-    """
-    # Agents tend to pass timeout=30 by habit, so cap it
-    timeout = min(timeout, MAX_DOWNLOAD_TIMEOUT)
-    # httpx's timeout limits each network operation, not the whole download: a host that keeps sending
-    # bytes slowly never trips it, so check the total time and size while streaming
-    deadline = time.monotonic() + timeout
-    chunks, size = [], 0
-    try:
-        # Many image hosts (e.g. Wikimedia) reject requests without a User-Agent
-        with httpx.stream("GET", url, timeout=timeout, follow_redirects=True,
-                          headers={"User-Agent": "AnkiAdder/0.1"}) as res:
-            res.raise_for_status()
-            for chunk in res.iter_bytes():
-                chunks.append(chunk)
-                size += len(chunk)
-                if size > MAX_DOWNLOAD_BYTES:
-                    raise ValueError(f"File is larger than {MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB: "
-                                     "try the thumbnail_url or another result")
-                if time.monotonic() > deadline:
-                    raise TimeoutError(f"Download took longer than {timeout:g} s: try another result")
-    except httpx.TimeoutException as e:
-        # httpx timeouts often have an empty message, which leaves the agent guessing
-        raise TimeoutError(f"Download timed out after {timeout:g} s: try another result") from e
-
-    path = Path(filename)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"".join(chunks))
-    return str(path)

@@ -1,14 +1,21 @@
 [project]
 name = "ankiadder"
 version = "0.1.0"
-description = "Add your description here"
+description = "AI assistant add-on for Anki Desktop"
 readme = "README.md"
-requires-python = ">=3.12"
+# Must match the Python bundled with Anki: vendor/ is built for it
+requires-python = ">=3.13,<3.14"
+# Runtime dependencies of the add-on: scripts/vendor.py bundles exactly these into anki_ai_assistant/vendor
 dependencies = [
     "httpx>=0.28.1",
     "openserp>=0.2.8",
-    "pillow>=13.0.0",
-    "python-dotenv>=1.2.4",
+    "pillow>=12.0.0",
     "pyyaml>=6.0.3",
-    "smolagents[litellm]>=1.26.0",
+    "smolagents[openai]>=1.26.0",
+]
+
+[dependency-groups]
+# Development only, not bundled into the add-on
+dev = [
+    "python-dotenv>=1.2.4",
 ]
