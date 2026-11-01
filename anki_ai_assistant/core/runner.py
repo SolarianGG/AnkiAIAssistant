@@ -11,6 +11,8 @@ from smolagents import ToolCallingAgent
 from smolagents.agents import ToolOutput
 from smolagents.memory import ActionStep, FinalAnswerStep, ToolCall
 
+from .checks import NO_CHANGES_MESSAGE
+
 MAX_PREVIEW_CHARS = 300
 
 
@@ -107,5 +109,7 @@ def describe_event(event: Any) -> str | None:
             return None
         return f"→ {_preview(event.observation)}"
     if isinstance(event, ActionStep) and event.error is not None:
+        if NO_CHANGES_MESSAGE in str(event.error):
+            return "↩ The collection was not changed: the answer went back to the model to check it."
         return f"⚠️ {_preview(str(event.error))}"
     return None

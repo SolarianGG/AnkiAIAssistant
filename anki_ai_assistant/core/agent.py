@@ -5,6 +5,7 @@ from typing import Any
 import yaml
 from smolagents import LogLevel, Tool, ToolCallingAgent
 
+from .checks import check_changes_made
 from .models import build_model
 from .prompts import ASSISTANT_INSTRUCTIONS
 
@@ -32,6 +33,7 @@ def build_agent(config: dict[str, Any], tools: list[Tool], download_dir: Path,
         tools=tools,
         managed_agents=managed_agents,
         prompt_templates=_prompt_templates(),
+        final_answer_checks=[check_changes_made],
         max_steps=int(config["roles"]["manager"].get("max_steps", 20)),
         verbosity_level=verbosity_level,
     )
