@@ -2,18 +2,12 @@
 
 Callbacks are called from the worker thread: the UI must pass them to the main thread itself."""
 
-import json
 import threading
 from collections.abc import Callable
 from typing import Any
 
-from smolagents import ToolCallingAgent
-from smolagents.agents import ToolOutput
-from smolagents.memory import ActionStep, FinalAnswerStep, ToolCall
-
-from .checks import NO_CHANGES_MESSAGE
-
-MAX_PREVIEW_CHARS = 300
+from smolagents import Model, ToolCallingAgent
+from smolagents.memory import FinalAnswerStep
 
 
 class RunnerBusy(Exception):
@@ -34,6 +28,8 @@ class AgentRunner:
         self._has_history = False
         self._thread: threading.Thread | None = None
         self._stop_requested = threading.Event()
+        # A new manager model for the current dialog, built in the worker on the next request
+        self._model_factory: Callable[[], Model] | None = None
 
     @property
     def busy(self) -> bool:
@@ -57,17 +53,30 @@ class AgentRunner:
             for managed_agent in self._agent.managed_agents.values():
                 managed_agent.interrupt()
 
+    def change_model(self, model_factory: Callable[[], Model]) -> None:
+        """Use another manager model from the next request on, keeping the dialog.
+
+        The factory runs in the worker thread: building a model may need the network (Ollama's context_length)."""
+        if self.busy:
+            raise RunnerBusy("Stop the assistant before changing the model.")
+        if self._agent is not None:
+            self._model_factory = model_factory
+
     def new_dialog(self) -> None:
         """Forget the conversation. The agent is rebuilt on the next request, so config changes apply too."""
         if self.busy:
             raise RunnerBusy("Stop the assistant before starting a new dialog.")
         self._agent = None
         self._has_history = False
+        self._model_factory = None
 
     def _run(self, task: str) -> None:
         try:
             if self._agent is None:
                 self._agent = self._agent_factory()
+            elif self._model_factory is not None:
+                self._agent.model = self._model_factory()
+                self._model_factory = None
             if self._stop_requested.is_set():
                 self._on_stopped()
                 return
@@ -87,29 +96,3 @@ class AgentRunner:
             else:
                 self._on_error(e)
 
-
-def _preview(value: Any, limit: int = MAX_PREVIEW_CHARS) -> str:
-    if not isinstance(value, str):
-        try:
-            value = json.dumps(value, ensure_ascii=False)
-        except (TypeError, ValueError):
-            value = str(value)
-    value = " ".join(value.split())
-    return value if len(value) <= limit else value[:limit] + "…"
-
-
-def describe_event(event: Any) -> str | None:
-    """A one-line description of an agent stream event for the chat, or None for events not worth showing."""
-    if isinstance(event, ToolCall):
-        if event.name == "final_answer":
-            return None
-        return f"🔧 {event.name}({_preview(event.arguments)})"
-    if isinstance(event, ToolOutput):
-        if event.is_final_answer:
-            return None
-        return f"→ {_preview(event.observation)}"
-    if isinstance(event, ActionStep) and event.error is not None:
-        if NO_CHANGES_MESSAGE in str(event.error):
-            return "↩ The collection was not changed: the answer went back to the model to check it."
-        return f"⚠️ {_preview(str(event.error))}"
-    return None

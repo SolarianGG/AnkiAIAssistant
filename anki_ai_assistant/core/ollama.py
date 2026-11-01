@@ -3,7 +3,10 @@
 Ollama's OpenAI-compatible endpoint ignores num_ctx in a request and loads every model with the server default
 (OLLAMA_CONTEXT_LENGTH). A model whose Modelfile sets num_ctx keeps it there, though. So for a role with
 context_length the add-on creates a derived model "<model>-ctx<N>" once: it shares the weights of the original
-(nothing is copied or downloaded) and only adds the parameter. Then requests go to that model."""
+(nothing is copied or downloaded) and only adds the parameter. Then requests go to that model.
+
+Other providers have a fixed context, so for them context_length is ignored: it is easily left over
+after switching a role from an Ollama model to a cloud one."""
 
 import json
 import urllib.error
@@ -27,6 +30,17 @@ def _post(url: str, body: dict[str, Any]) -> dict[str, Any]:
         return json.loads(response.read() or b"{}")
 
 
+def _is_ollama(base: str) -> bool:
+    """Whether the server at base is Ollama. Connection errors propagate: Ollama may just not be running."""
+    try:
+        with urllib.request.urlopen(f"{base}/api/version", timeout=TIMEOUT) as response:
+            return "version" in json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError:
+        return False
+    except ValueError:  # not JSON, e.g. a web page
+        return False
+
+
 def _show(base: str, model: str) -> dict[str, Any] | None:
     """The model's details, or None if Ollama has no such model."""
     try:
@@ -45,10 +59,14 @@ def _max_context(details: dict[str, Any]) -> int | None:
 
 
 def model_with_context(api_base: str, model: str, context_length: int) -> str:
-    """The name of a model like `model` with the given context size, created in Ollama if needed."""
+    """The name of a model like `model` with the given context size, created in Ollama if needed.
+
+    For a server that is not Ollama, `model` itself."""
     base = _native_base(api_base)
     derived = f"{model}-ctx{context_length}"
     try:
+        if not _is_ollama(base):
+            return model
         if _show(base, derived) is not None:
             return derived
         details = _show(base, model)

@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import uuid
 from typing import Any
 
@@ -107,6 +108,15 @@ class AssistantModel(OpenAIServerModel):
 
 
 _CALL_MARKERS = ("<tool_call", "<function", "<|tool")
+# Tags of call syntax, opening or closing: "</tool_call>", "<|tool_calls_end|>", "<function=list_decks>"
+_CALL_TAG = re.compile(r"</?\s*(?:tool_calls?|function)\b[^>]*>?|<\|[^>]*?\|>")
+# A word of at least two letters or digits, in any script
+_WORD = re.compile(r"[^\W_]{2,}")
+
+
+def is_empty_reply(text: str) -> bool:
+    """Whether a reply has nothing for the user: empty, or only bits of call syntax like "s</tool_call>"."""
+    return _WORD.search(_CALL_TAG.sub(" ", text)) is None
 
 
 def _looks_like_tool_call(text: str) -> bool:

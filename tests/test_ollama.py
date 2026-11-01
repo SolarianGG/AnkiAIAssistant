@@ -15,6 +15,9 @@ class FakeOllama(BaseHTTPRequestHandler):
     models = {}
     created = []
 
+    def do_GET(self):
+        self._reply(200, {"version": "0.40.13"}) if self.path == "/api/version" else self._reply(404, {})
+
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         if self.path == "/api/show":
@@ -69,6 +72,25 @@ def test_unknown_model(ollama):
 def test_not_an_ollama_server():
     with pytest.raises(ConfigError, match="only with Ollama"):
         model_with_context("http://127.0.0.1:9/v1", "qwen:9b", 16384)
+
+
+class NotOllama(FakeOllama):
+    """A provider like OpenRouter: no Ollama API, so every path is 404."""
+
+    def do_GET(self):
+        self._reply(404, {"error": "not found"})
+
+    do_POST = do_GET
+
+
+def test_other_providers_ignore_context_length():
+    server = HTTPServer(("127.0.0.1", 0), NotOllama)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        api_base = f"http://127.0.0.1:{server.server_port}/api/v1"
+        assert model_with_context(api_base, "qwen/qwen3.8-27b", 16384) == "qwen/qwen3.8-27b"
+    finally:
+        server.shutdown()
 
 
 def test_build_model_uses_the_derived_model(ollama):

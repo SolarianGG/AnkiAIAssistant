@@ -1,13 +1,17 @@
-"""The chat dock: a minimal chat with the agent (history, input, Stop, New dialog)."""
+"""The chat dock: the dialog with the agent, its steps, previews of the cards it made, the model picker."""
 
-import html
 from pathlib import Path
 from typing import Any
 
-from aqt import gui_hooks
+from aqt import dialogs, gui_hooks
 from aqt.main import AnkiQt
-from aqt.qt import (QDockWidget, QHBoxLayout, QKeySequence, QLabel, QPlainTextEdit, QPushButton, QShortcut,
-                    QTextBrowser, QVBoxLayout, QWidget, Qt)
+from aqt.qt import (QComboBox, QDesktopServices, QDockWidget, QHBoxLayout, QKeySequence, QLabel, QPlainTextEdit,
+                    QPushButton, QShortcut, QSizePolicy, QTextBrowser, QToolButton, QUrl, QVBoxLayout, QWidget,
+                    Qt)
+
+from ..core.config import load_config
+from ..core.context import NotesContext, manager_choices, model_label, task_with_context, with_manager
+from ..core.transcript import BROWSE_LINK, STEP_LINK, Transcript
 
 ADDON_DIR = Path(__file__).resolve().parent.parent
 # user_files survives add-on updates
@@ -20,14 +24,44 @@ class ChatDock(QDockWidget):
         self.mw = mw
         self.addon_module = addon_module
         self.runner = None
+        self.transcript = Transcript()
+        self.context: NotesContext | None = None
         self.setObjectName("AIAssistantDock")
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
 
         body = QWidget(self)
         layout = QVBoxLayout(body)
+
+        top = QHBoxLayout()
+        self.model_picker = QComboBox(body)
+        self.model_picker.setToolTip("The assistant's model. Add more in the settings.")
+        self.model_picker.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.model_picker.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.model_picker.activated.connect(self._on_model_picked)
+        top.addWidget(self.model_picker, stretch=1)
+        settings_button = QToolButton(body)
+        settings_button.setText("⚙")
+        settings_button.setToolTip("Settings")
+        settings_button.clicked.connect(self.open_settings)
+        top.addWidget(settings_button)
+        layout.addLayout(top)
+
         self.history = QTextBrowser(body)
-        self.history.setOpenExternalLinks(True)
+        # Links are handled here: step toggles, opening notes in the browser, web links
+        self.history.setOpenLinks(False)
+        self.history.anchorClicked.connect(self._on_link)
         layout.addWidget(self.history, stretch=1)
+
+        context_row = QHBoxLayout()
+        self.context_label = QLabel("", body)
+        self.context_label.setStyleSheet("color: gray;")
+        context_row.addWidget(self.context_label, stretch=1)
+        self.context_clear = QToolButton(body)
+        self.context_clear.setText("✕")
+        self.context_clear.setToolTip("Ask without these notes")
+        self.context_clear.clicked.connect(lambda: self.set_context(None))
+        context_row.addWidget(self.context_clear)
+        layout.addLayout(context_row)
 
         self.input = QPlainTextEdit(body)
         self.input.setPlaceholderText("Ask the assistant… (Ctrl+Enter to send)")
@@ -48,32 +82,39 @@ class ChatDock(QDockWidget):
             buttons.addWidget(button)
         layout.addLayout(buttons)
         self.status = QLabel("", body)
+        self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.setWidget(body)
 
         mw.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self)
         self.hide()
         gui_hooks.profile_will_close.append(self.stop)
+        self.set_context(None)
+        self._fill_model_picker()
         self._set_busy(False)
 
     # Actions
 
     def send(self) -> None:
         task = self.input.toPlainText().strip()
-        if not task or (self.runner is not None and self.runner.busy):
+        if not task or self._busy():
             return
         try:
             runner = self._get_runner()
         except ImportError as e:
-            self._append_error(f"The add-on dependencies are missing ({e}). Build them with scripts/vendor.py.")
+            self._add_error(f"The add-on dependencies are missing ({e}). Build them with scripts/vendor.py.")
             return
         self.input.clear()
-        self._append(f"<p><b>You:</b> {_to_html(task)}</p>")
+        context = self.context
+        self.transcript.add_message("user", task, context.label if context else "")
+        # The context is for this request; the ids stay in the dialog's history for the next ones
+        self.set_context(None)
+        self._render(to_bottom=True)
         self._set_busy(True)
-        runner.submit(task)
+        runner.submit(task_with_context(task, context))
 
     def stop(self) -> None:
-        if self.runner is not None and self.runner.busy:
+        if self._busy():
             self.runner.stop()
             self.status.setText("Stopping after the current step…")
 
@@ -82,13 +123,73 @@ class ChatDock(QDockWidget):
             if self.runner.busy:
                 return
             self.runner.new_dialog()
-        self.history.clear()
+        self.transcript.clear()
+        self._render()
         self.status.setText("")
 
+    def set_context(self, context: NotesContext | None, request: str = "") -> None:
+        """Make the next request about these notes. request fills an empty input, e.g. "Enrich this note"."""
+        self.context = context if context and context.note_ids else None
+        visible = self.context is not None
+        self.context_label.setText(f"About {self.context.label}" if visible else "")
+        self.context_label.setVisible(visible)
+        self.context_clear.setVisible(visible)
+        if visible:
+            if request and not self.input.toPlainText().strip():
+                self.input.setPlainText(request)
+            self.input.setFocus()
+
     def config_changed(self) -> None:
+        self._fill_model_picker()
         self.status.setText("Settings changed: they apply in a new dialog.")
 
+    def open_settings(self) -> None:
+        from .settings_dialog import SettingsDialog
+
+        def save(config: dict) -> None:
+            self.mw.addonManager.writeConfig(self.addon_module, config)
+            self.config_changed()
+
+        SettingsDialog(self.mw.app.activeWindow() or self.mw, self._config(), save).exec()
+
+    # Model picker
+
+    def _config(self) -> dict:
+        return load_config(self.mw.addonManager.getConfig(self.addon_module))
+
+    def _fill_model_picker(self) -> None:
+        self.model_picker.clear()
+        try:
+            choices = manager_choices(self._config())
+        except (KeyError, TypeError, ValueError):
+            return
+        for choice in choices:
+            self.model_picker.addItem(model_label(choice.get("provider", ""), choice.get("model", "")), choice)
+        self.model_picker.setCurrentIndex(0)
+
+    def _on_model_picked(self, index: int) -> None:
+        choice = self.model_picker.itemData(index)
+        if choice is None or index == 0:
+            return
+        if self._busy():
+            self.model_picker.setCurrentIndex(0)
+            return
+        config = with_manager(self._config(), choice)
+        self.mw.addonManager.writeConfig(self.addon_module, config)
+        self._fill_model_picker()
+        if self.runner is not None:
+            from ..core.models import build_model
+
+            # Built from the saved config when the next request starts
+            self.runner.change_model(lambda: build_model(self._config(), "manager"))
+        label = model_label(choice["provider"], choice["model"])
+        self.transcript.add_notice(f"Model: {label}. It answers from the next request on.")
+        self._render(to_bottom=True)
+
     # Runner
+
+    def _busy(self) -> bool:
+        return self.runner is not None and self.runner.busy
 
     def _get_runner(self):
         if self.runner is None:
@@ -110,12 +211,10 @@ class ChatDock(QDockWidget):
         from ..anki_api.tools_read import read_tools
         from ..anki_api.tools_write import write_tools
         from ..core.agent import build_agent
-        from ..core.config import load_config
 
-        config = load_config(self.mw.addonManager.getConfig(self.addon_module))
         service = self._build_service()
         tools = read_tools(service) + write_tools(service, DOWNLOAD_DIR) + destructive_tools(service)
-        return build_agent(config, tools=tools, download_dir=DOWNLOAD_DIR)
+        return build_agent(self._config(), tools=tools, download_dir=DOWNLOAD_DIR)
 
     def _build_service(self):
         """One service per dialog, so a dialog backs the collection up before its first write."""
@@ -137,43 +236,69 @@ class ChatDock(QDockWidget):
         )
 
     def _show_event(self, event: Any) -> None:
-        from ..core.runner import describe_event
+        from smolagents.agents import ToolOutput
 
-        text = describe_event(event)
-        if text:
-            self._append(f'<p style="color: gray; margin-left: 12px;">{_to_html(text)}</p>')
+        if not self.transcript.add_event(event):
+            return
+        if isinstance(event, ToolOutput) and event.tool_call is not None and self.mw.col is not None:
+            from ..anki_api.previews import note_ids_from_output, previews_html
+
+            note_ids = note_ids_from_output(event.tool_call.name, str(event.observation))
+            if note_ids:
+                self.transcript.add_html(previews_html(self.mw.col, note_ids))
+        self._render()
 
     def _show_answer(self, answer: Any) -> None:
-        self._append(f"<p><b>Assistant:</b> {_to_html(str(answer))}</p>")
+        self.transcript.add_message("assistant", "" if answer is None else str(answer))
+        self._render()
         self._set_busy(False)
 
     def _show_error(self, error: Exception) -> None:
         from ..core.config import ConfigError
 
-        message = str(error) if isinstance(error, ConfigError) else f"{type(error).__name__}: {error}"
-        self._append_error(message)
+        self._add_error(str(error) if isinstance(error, ConfigError) else f"{type(error).__name__}: {error}")
         self._set_busy(False)
 
     def _show_stopped(self) -> None:
-        self._append('<p style="color: gray;"><i>Stopped.</i></p>')
+        self.transcript.add_notice("Stopped.")
+        self._render()
         self._set_busy(False)
 
     # Helpers
 
-    def _append(self, html_text: str) -> None:
-        self.history.append(html_text)
-        scrollbar = self.history.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+    def _on_link(self, url: QUrl) -> None:
+        link = url.toString()
+        if link.startswith(STEP_LINK):
+            self.transcript.toggle(int(link[len(STEP_LINK):]))
+            self._render(keep_position=True)
+        elif link.startswith(BROWSE_LINK):
+            note_ids = link[len(BROWSE_LINK):]
+            # search_for also works when the browser is already open
+            dialogs.open("Browser", self.mw).search_for(f"nid:{note_ids}")
+        elif url.scheme() in ("http", "https"):
+            QDesktopServices.openUrl(url)
 
-    def _append_error(self, message: str) -> None:
-        self._append(f'<p style="color: #c0392b;"><b>Error:</b> {_to_html(message)}</p>')
+    def _render(self, to_bottom: bool = False, keep_position: bool = False) -> None:
+        """Show the transcript. It follows new messages unless the user scrolled up to read."""
+        scrollbar = self.history.verticalScrollBar()
+        position = scrollbar.value()
+        at_bottom = position >= scrollbar.maximum() - 8
+        if self.mw.col is not None:
+            # Card previews refer to images by their filename in the collection's media folder
+            self.history.setSearchPaths([self.mw.col.media.dir()])
+        self.history.setHtml(self.transcript.render())
+        if keep_position or not (to_bottom or at_bottom):
+            scrollbar.setValue(position)
+        else:
+            scrollbar.setValue(scrollbar.maximum())
+
+    def _add_error(self, message: str) -> None:
+        self.transcript.add_notice(message, error=True)
+        self._render(to_bottom=True)
 
     def _set_busy(self, busy: bool) -> None:
         self.send_button.setEnabled(not busy)
         self.new_button.setEnabled(not busy)
+        self.model_picker.setEnabled(not busy)
         self.stop_button.setEnabled(busy)
         self.status.setText("Working…" if busy else "")
-
-
-def _to_html(text: str) -> str:
-    return html.escape(text).replace("\n", "<br>")

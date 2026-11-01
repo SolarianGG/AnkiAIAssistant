@@ -1,3 +1,5 @@
+Tools > Add-ons > Config and the ⚙ button of the chat open the add-on's settings dialog; this file describes the settings it saves.
+
 **providers**: OpenAI-compatible endpoints, any number of them. `api_base` must end with `/v1` (Ollama: `http://localhost:11434/v1`). The key is stored in plain text. An empty `api_key` falls back to the environment variable `<PROVIDER>_API_KEY`, e.g. `OPENROUTER_API_KEY`.
 
 **roles**: which provider and model each agent uses.
@@ -11,10 +13,12 @@
 
 `extra_body` (optional) adds fields to every request of the role. On OpenRouter it picks who serves the model: the cheapest hosts often break tool calls, so the assistant fails to act. For example `"extra_body": {"provider": {"order": ["fireworks", "together", "deepinfra"]}}` tries those hosts first; add `"allow_fallbacks": false` to use only them.
 
+**manager_presets**: other models for the manager, to pick in the chat without opening the settings. Each is a role config without `max_steps`, at least `{"provider": "openrouter", "model": "z-ai/glm-5.3-flash"}`. When you pick one, the previous manager model goes into this list with its settings, so switching back restores them. A model picked in the chat answers from the next request of the same dialog.
+
 **openserp_base_url**: a self-hosted OpenSERP server used for image search. Leave it empty to disable image search.
 
 `llm_timeout` is the per-request timeout in seconds, `llm_max_retries` how many times a failed request is resent.
 
-`context_length` (optional, Ollama only) is the model's context window in tokens; `0` or no value uses the Ollama server's default (`OLLAMA_CONTEXT_LENGTH`, often 4096 or 8192). The assistant's instructions and tools alone take about 5500 tokens, so 16384 is the minimum for the manager and 32768 is recommended for longer dialogs; a larger context needs more memory. Ollama's OpenAI endpoint cannot set the context per request, so the add-on creates a model `<model>-ctx<N>` in Ollama once: it uses the same weights, nothing is downloaded, and it appears in `ollama list`. When the dialog outgrows the context, the assistant stops with an error instead of answering nonsense.
+`context_length` (optional, Ollama only; other providers ignore it) is the model's context window in tokens; `0` or no value uses the Ollama server's default (`OLLAMA_CONTEXT_LENGTH`, often 4096 or 8192). The assistant's instructions and tools alone take about 5500 tokens, so 16384 is the minimum for the manager and 32768 is recommended for longer dialogs; a larger context needs more memory. Ollama's OpenAI endpoint cannot set the context per request, so the add-on creates a model `<model>-ctx<N>` in Ollama once: it uses the same weights, nothing is downloaded, and it appears in `ollama list`. When the dialog outgrows the context, the assistant stops with an error instead of answering nonsense.
 
 Changes take effect in the next dialog.
