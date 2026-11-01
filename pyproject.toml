@@ -17,5 +17,11 @@ dependencies = [
 [dependency-groups]
 # Development only, not bundled into the add-on
 dev = [
+    "anki==26.8.1",
+    "pytest>=9.2.0",
     "python-dotenv>=1.2.4",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]

@@ -106,12 +106,28 @@ class ChatDock(QDockWidget):
 
     def _build_agent(self):
         """Called in the worker thread on the first request of a dialog."""
+        from ..anki_api.tools_read import read_tools
         from ..core.agent import build_agent
         from ..core.config import load_config
 
         config = load_config(self.mw.addonManager.getConfig(self.addon_module))
-        # The collection tools arrive in stage 2
-        return build_agent(config, tools=[], download_dir=DOWNLOAD_DIR)
+        return build_agent(config, tools=read_tools(self._build_service()), download_dir=DOWNLOAD_DIR)
+
+    def _build_service(self):
+        """One service per dialog, so a dialog backs the collection up before its first write."""
+        from aqt.operations import on_op_finished
+
+        from ..anki_api.service import AnkiService
+
+        mw = self.mw
+        return AnkiService(
+            lambda: mw.col,
+            run_on_main=mw.taskman.run_on_main,
+            # What CollectionOp does after an operation: refresh the undo menu, the browser and the main screen
+            on_changes=lambda changes: on_op_finished(mw, changes, None),
+            backup=lambda col: col.create_backup(backup_folder=mw.pm.backupFolder(), force=True,
+                                                 wait_for_completion=False),
+        )
 
     def _show_event(self, event: Any) -> None:
         from ..core.runner import describe_event
