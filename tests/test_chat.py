@@ -216,3 +216,12 @@ def test_failed_calls_are_marked():
     transcript.add_event(ActionStep(step_number=1, timing=None))
     assert [(s.is_error, s.failed) for s in transcript.entries] == [(True, False), (True, True)]
     assert "⚠️ Error: the call" in transcript.render() and "⚠️ not run" in transcript.render()
+
+
+def test_an_answer_given_after_the_last_step_is_text():
+    from anki_ai_assistant.core.runner import MAX_STEPS_NOTE, answer_text
+
+    parts = [{"type": "text", "text": "Card added."}]
+    assert answer_text(parts) == "Card added."
+    assert answer_text(parts, max_steps_reached=True) == MAX_STEPS_NOTE + "Card added."
+    assert answer_text("plain") == "plain"

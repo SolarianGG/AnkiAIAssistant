@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parent
 ADDON_DIR = ROOT / "anki_ai_assistant"
 DOWNLOAD_DIR = ROOT / "images"
 DEFAULT_COLLECTION = ROOT / "dev_collection" / "collection.anki2"
+CACHE_DIR = ROOT / "dev_collection" / "cache"
 
 DEFAULT_TASK = """Create the Anki deck 'Test German Deck' with 2 cards for common German nouns.
 Each card: Front = an image of the thing + the German word with its article (e.g. 'der Hund'), Back = the English translation."""
@@ -67,7 +68,7 @@ def main():
         # Everything runs in this one thread, so the service calls the collection directly
         service = AnkiService(lambda: col, confirm=confirm_in_console)
         tools = read_tools(service) + write_tools(service, DOWNLOAD_DIR) + destructive_tools(service)
-        agent = build_agent(load_config(user_config()), tools=tools, download_dir=DOWNLOAD_DIR,
+        agent = build_agent(load_config(user_config()), tools=tools, download_dir=DOWNLOAD_DIR, cache_dir=CACHE_DIR,
                             verbosity_level=LogLevel.INFO)
         print(agent.run(" ".join(args.task) or DEFAULT_TASK))
     finally:

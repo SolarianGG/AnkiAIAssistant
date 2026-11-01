@@ -12,7 +12,9 @@ from anki.errors import AbortSchemaModification, NotFoundError
 from anki.notes import NoteFieldsCheckResult
 from smolagents import Tool
 
-from ..web.download import fetch, safe_filename
+from ..web.download import safe_filename
+from ..web.media import check_not_web_page, prepare_image
+from ..web.net import fetch
 from .confirm import ChangePlan
 from .service import AnkiService
 from .tools_base import (AnkiTool, AnkiToolError, check_field_names, find_deck, find_note_type, short_text,
@@ -256,8 +258,8 @@ class AddTagsTool(AnkiWriteTool):
 class StoreMediaTool(AnkiWriteTool):
     name = "store_media"
     description = (
-        "Store an image or audio file in the collection media, from a file found by image_searcher or from a URL. "
-        "Returns the stored filename (Anki may rename it) and the HTML to put into a note field: "
+        "Store an image or audio file in the collection media, from a file found by image_searcher or from a URL "
+        "(e.g. an 'audio' url from dictionary_lookup). Images are shrunk to card size. Returns the stored filename (Anki may rename it) and the HTML to put into a note field: "
         "<img src=\"file.jpg\"> for an image, [sound:file.mp3] for audio. "
         "Media is not undone by Edit > Undo, but files no note uses are removed by Tools > Check Media."
     )
@@ -296,6 +298,13 @@ class StoreMediaTool(AnkiWriteTool):
         data = fetch(source) if is_url else path.read_bytes()
         if not data:
             raise AnkiToolError("The file is empty.")
+        try:
+            if extension in IMAGE_EXTENSIONS:
+                data, name = prepare_image(data, name)
+            else:
+                check_not_web_page(data)
+        except ValueError as e:
+            raise AnkiToolError(str(e))
         # Not an undoable operation, so no undo step: Anki keeps media outside the undo history
         stored = self.read(lambda col: col.media.write_data(name, data))
         html = f'<img src="{stored}">' if extension in IMAGE_EXTENSIONS else f"[sound:{stored}]"

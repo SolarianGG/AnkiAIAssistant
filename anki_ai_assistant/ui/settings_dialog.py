@@ -152,7 +152,7 @@ class SettingsDialog(QDialog):
         general_tab = QWidget(self)
         general = QFormLayout(general_tab)
         self.openserp = QLineEdit(self.config.get("openserp_base_url", ""), general_tab)
-        self.openserp.setPlaceholderText("empty: no image search")
+        self.openserp.setPlaceholderText("optional: images come from Wikimedia without it")
         general.addRow("OpenSERP URL", self.openserp)
         self.timeout = QSpinBox(general_tab)
         self.timeout.setRange(10, 3600)

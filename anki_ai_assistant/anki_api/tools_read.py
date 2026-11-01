@@ -1,5 +1,7 @@
 """Read-only tools: the agent looks at the collection before it changes anything. They run without confirmation."""
 
+import difflib
+import re
 from datetime import date, datetime, timedelta
 
 from anki.collection import Collection
@@ -190,9 +192,44 @@ class SearchNotesTool(AnkiReadTool):
             result = {"total": len(note_ids), "offset": offset, "notes": notes}
             if offset + len(page) < len(note_ids):
                 result["next_offset"] = offset + len(page)
+            if not note_ids:
+                hint = unknown_deck_hint(col, query)
+                if hint:
+                    result["hint"] = hint
             return result
 
         return _json(self.read(run))
+
+
+# deck:name in a query: "deck:A B", deck:"A B" or deck:A (up to the next space)
+DECK_TERM = re.compile(r'"deck:((?:[^"\\]|\\.)*)"|deck:"((?:[^"\\]|\\.)*)"|deck:(\S+)', re.IGNORECASE)
+
+
+def unknown_deck_hint(col: Collection, query: str) -> str | None:
+    """Why a search found nothing, when it names a deck that does not exist.
+
+    Models write deck:Test German for the deck 'Test German', which Anki reads as deck 'Test' and the word
+    'German', or use a part of a deck name; the empty result then looks like an empty deck."""
+    names = [d.name for d in col.decks.all_names_and_ids()]
+    lower = {n.lower() for n in names}
+    hints = []
+    for match in DECK_TERM.finditer(query):
+        name = next(g for g in match.groups() if g is not None).replace('\\"', '"')
+        # * and _ are wildcards in Anki search: such a term is not a deck name to check
+        if not name or "*" in name or "_" in name or name.lower() in lower:
+            continue
+        leaf = name.lower().split("::")[-1]
+        similar = [n for n in names if leaf in n.lower()]
+        similar += difflib.get_close_matches(name, names, n=5, cutoff=0.5)
+        similar = list(dict.fromkeys(similar))[:5]
+        hint = f"No deck is named '{name}'."
+        if similar:
+            hint += " Decks with similar names: " + ", ".join(f'"deck:{n}"' for n in similar) + "."
+        hints.append(hint)
+    if not hints:
+        return None
+    return " ".join(hints) + (' Put a deck name with spaces or quotes in quotes: "deck:Test German"; '
+                              "a deck name includes its parents, e.g. Parent::Child.")
 
 
 def _due(col: Collection, card) -> str | int | None:

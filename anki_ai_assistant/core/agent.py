@@ -56,27 +56,30 @@ class AssistantAgent(ToolCallingAgent):
         return result
 
 
-def build_agent(config: dict[str, Any], tools: list[Tool], download_dir: Path,
+def build_agent(config: dict[str, Any], tools: list[Tool], download_dir: Path, cache_dir: Path | None = None,
                 verbosity_level: int = LogLevel.OFF) -> ToolCallingAgent:
-    """Build the assistant: a ToolCallingAgent with the collection tools and image_searcher as a managed agent.
+    """Build the assistant: a ToolCallingAgent with the collection tools, the web tools and image_searcher
+    as a managed agent. cache_dir keeps answers of web APIs (none: no cache).
 
     verbosity_level controls smolagents' console log: off inside Anki, where nobody reads stdout."""
-    managed_agents = []
-    if config.get("openserp_base_url"):
-        from ..web.images import build_image_searcher
+    from ..web.images import build_image_searcher
+    from ..web.net import WebCache
+    from ..web.tools import web_tools
 
-        managed_agents.append(build_image_searcher(
-            model=build_model(config, "searcher"),
-            validator_model=build_model(config, "validator"),
-            openserp_base_url=config["openserp_base_url"],
-            download_dir=download_dir,
-            max_steps=int(config["roles"]["searcher"].get("max_steps", 20)),
-            verbosity_level=verbosity_level,
-        ))
+    cache = WebCache(cache_dir)
+    managed_agents = [build_image_searcher(
+        model=build_model(config, "searcher"),
+        validator_model=build_model(config, "validator"),
+        download_dir=download_dir,
+        cache=cache,
+        max_steps=int(config["roles"]["searcher"].get("max_steps", 20)),
+        verbosity_level=verbosity_level,
+        openserp_base_url=config.get("openserp_base_url", ""),
+    )]
 
     return AssistantAgent(
         model=build_model(config, "manager"),
-        tools=tools,
+        tools=tools + web_tools(cache),
         managed_agents=managed_agents,
         prompt_templates=_prompt_templates(),
         final_answer_checks=[check_answer_has_text, check_changes_made],

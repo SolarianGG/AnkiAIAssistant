@@ -19,8 +19,9 @@ class NotesContext:
         return f"{count} selected note" + ("" if count == 1 else "s")
 
 
-ENRICH_REQUEST = ("Enrich this note: fill its empty fields (e.g. a translation, an example sentence) "
-                  "and add a picture if the note type has a field for it. Do not change fields that are filled.")
+ENRICH_REQUEST = ("Enrich this note: fill its empty fields (e.g. a translation, grammar, an example sentence) "
+                  "with dictionary_lookup, and add a picture and a pronunciation recording if the note type has fields "
+                  "for them. Do not change fields that are filled.")
 
 
 def task_with_context(task: str, context: NotesContext | None) -> str:

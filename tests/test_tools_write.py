@@ -7,6 +7,8 @@ from smolagents.models import get_tool_json_schema
 from anki_ai_assistant.anki_api.tools_write import (AddNotesTool, AddTagsTool, CreateDeckTool, CreateNoteTypeTool,
                                                     ExtendNoteTypeTool, StoreMediaTool, UpdateNotesTool, write_tools)
 
+from test_web import image_bytes
+
 TEMPLATE = {"name": "Card 1", "front": "{{Word}}", "back": "{{FrontSide}}<hr id=answer>{{Meaning}}"}
 
 
@@ -122,19 +124,34 @@ def test_add_tags(service, col, german):
 def test_store_media_from_download_dir(service, col, tmp_path):
     downloads = tmp_path / "downloads"
     downloads.mkdir()
-    (downloads / "hund.jpg").write_bytes(b"jpeg data")
+    jpeg = image_bytes((300, 200), fmt="JPEG")
+    (downloads / "hund.jpg").write_bytes(jpeg)
     tool = StoreMediaTool(service, downloads)
 
     first = call(tool, source=str(downloads / "hund.jpg"))
-    assert first == {"filename": "hund.jpg", "html": '<img src="hund.jpg">', "bytes": 9}
+    assert first == {"filename": "hund.jpg", "html": '<img src="hund.jpg">', "bytes": len(jpeg)}
     assert col.media.have("hund.jpg")
 
-    (downloads / "other.jpg").write_bytes(b"different data")
+    (downloads / "other.jpg").write_bytes(image_bytes((300, 100), fmt="JPEG"))
     second = call(tool, source=str(downloads / "other.jpg"), filename="hund.jpg")
     assert second["filename"] != "hund.jpg"  # Anki keeps the first file and renames the new one
 
-    audio = call(tool, source=str(downloads / "other.jpg"), filename="hund.mp3")
+    (downloads / "hund.mp3").write_bytes(b"ID3 mp3 data")
+    audio = call(tool, source=str(downloads / "hund.mp3"))
     assert audio["html"] == "[sound:hund.mp3]"
+
+
+def test_store_media_shrinks_images_and_rejects_web_pages(service, col, tmp_path):
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    (downloads / "big.png").write_bytes(image_bytes((1600, 1200)))
+    (downloads / "page.mp3").write_bytes(b"<!doctype html><html>403 Forbidden</html>")
+    tool = StoreMediaTool(service, downloads)
+
+    stored = call(tool, source=str(downloads / "big.png"))
+    assert stored["filename"] == "big.jpg" and col.media.have("big.jpg")
+    with pytest.raises(Exception, match="web page"):
+        tool(source=str(downloads / "page.mp3"))
 
 
 def test_store_media_refuses_other_files(service, tmp_path):

@@ -15,7 +15,7 @@ Tools > Add-ons > Config and the ⚙ button of the chat open the add-on's settin
 
 **manager_presets**: other models for the manager, to pick in the chat without opening the settings. Each is a role config without `max_steps`, at least `{"provider": "openrouter", "model": "z-ai/glm-5.3-flash"}`. When you pick one, the previous manager model goes into this list with its settings, so switching back restores them. A model picked in the chat answers from the next request of the same dialog.
 
-**openserp_base_url**: a self-hosted OpenSERP server used for image search. Leave it empty to disable image search.
+**openserp_base_url**: a self-hosted OpenSERP server, tried first for image search. Images come from Wikipedia and Wikimedia Commons without it (and when it is not running), so it can stay empty.
 
 `llm_timeout` is the per-request timeout in seconds, `llm_max_retries` how many times a failed request is resent.
 

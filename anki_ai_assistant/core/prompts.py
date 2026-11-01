@@ -17,6 +17,9 @@ Rules:
   media is referenced by its filename in the collection, e.g. <img src="hund.jpg">.
 - For a picture on a card call image_searcher once per word, store the image_path it returns with store_media
   and put the html that store_media returns into the note field.
+- For grammar (gender, plural, forms), IPA, pronunciation and example sentences call dictionary_lookup instead of
+  writing them from memory. For a recording store an 'audio' url it returns with store_media. If it finds no entry
+  or no recording, say so; never invent media URLs.
 - Prefer existing note types. Changing a note type in use (extend_note_type) forces a full sync, so do it only
   when the user asked for it; for a different card layout create a new note type instead.
 - Every change you make can be undone by the user with Edit > Undo, one step per tool call.

@@ -8,10 +8,24 @@ from typing import Any
 
 from smolagents import Model, ToolCallingAgent
 from smolagents.memory import FinalAnswerStep
+from smolagents.utils import AgentMaxStepsError
 
 
 class RunnerBusy(Exception):
     pass
+
+
+MAX_STEPS_NOTE = "⚠️ The assistant used all its steps (max_steps) and stopped. What it managed to tell:\n\n"
+
+
+def answer_text(output: Any, max_steps_reached: bool = False) -> Any:
+    """The answer as text. After the last step smolagents asks the model for an answer without tools and returns
+    the message content as is: a list of parts like [{"type": "text", "text": ...}]."""
+    if isinstance(output, list) and all(isinstance(part, dict) for part in output):
+        output = "\n".join(str(part.get("text", "")) for part in output if part.get("type", "text") == "text")
+    if max_steps_reached:
+        output = MAX_STEPS_NOTE + ("" if output is None else str(output))
+    return output
 
 
 class AgentRunner:
@@ -70,6 +84,10 @@ class AgentRunner:
         self._has_history = False
         self._model_factory = None
 
+    def _max_steps_reached(self) -> bool:
+        steps = getattr(getattr(self._agent, "memory", None), "steps", None) or []
+        return bool(steps) and isinstance(getattr(steps[-1], "error", None), AgentMaxStepsError)
+
     def _run(self, task: str) -> None:
         try:
             if self._agent is None:
@@ -85,7 +103,7 @@ class AgentRunner:
                 # The history counts from the first step on, also when the run fails or is stopped later
                 self._has_history = True
                 if isinstance(event, FinalAnswerStep):
-                    answer = event.output
+                    answer = answer_text(event.output, self._max_steps_reached())
                 else:
                     self._on_event(event)
             self._on_done(answer)

@@ -41,6 +41,13 @@ def test_context_cut_by_the_server_is_an_error(model):
         model._check_context(7, 4098)
 
 
+def test_a_request_without_tools_is_not_compared_with_steps(model):
+    """After the last step smolagents asks for the final answer without the tools: no schemas, fewer tokens."""
+    model._check_context(30, 16634, ("add_notes", "search_notes"))
+    model._check_context(32, 10939, ())
+    model._check_context(34, 17000, ("add_notes", "search_notes"))
+
+
 def test_new_dialog_with_fewer_tokens_is_fine(model):
     model._check_context(9, 7000)
     model._check_context(2, 3000)  # fewer messages: a fresh history, not a cut one

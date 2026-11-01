@@ -111,3 +111,22 @@ def test_collection_stats(service, german):
     assert stats["notes"] == 4 and stats["cards"] == 4
     assert stats["new_cards"] == 4 and stats["suspended_cards"] == 0
     assert stats["due_today"]["new"] == 4
+
+
+def test_an_empty_search_names_the_unknown_deck(service, col, german):
+    from conftest import add_note
+
+    add_note(col, "Test German", Front="Haus", Back="house")
+    add_note(col, 'Polish::01. Nouns ("Rzeczowniki")', Front="dom", Back="house")
+
+    # Without quotes Anki reads deck 'Test' and the word 'German'
+    result = call(SearchNotesTool, service, query="deck:Test German")
+    assert result["total"] == 0
+    assert "No deck is named 'Test'" in result["hint"] and '"deck:Test German"' in result["hint"]
+
+    result = call(SearchNotesTool, service, query='"deck:01. rzeczowniki"')
+    assert '"deck:Polish::01. Nouns ("Rzeczowniki")"' in result["hint"]
+
+    # The deck exists and the search simply finds nothing: no hint
+    assert "hint" not in call(SearchNotesTool, service, query='"deck:Test German" Katze')
+    assert "hint" not in call(SearchNotesTool, service, query="deck:Germ* Katzenklo")

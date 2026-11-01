@@ -12,13 +12,17 @@ from smolagents.agents import RunResult, populate_template
 from smolagents.models import ChatMessage, MessageRole
 
 from .download import DownloadFileTool
+from .net import WebCache
+from .search import OpenSERPWebPageSearchTool, WebImageSearchTool
 
 SEARCHER_INSTRUCTIONS = """You are a web image search agent. You get ONE word or concept and must find a picture that clearly depicts it.
-1. Call web_image_search with ONLY the English translation plus "photo", e.g. query='dog photo' for 'Hund (dog)'.
+1. Call web_image_search with ONLY the English translation, e.g. query='dog' for 'Hund (dog)'.
    Never put the foreign word into the query: it is often a false friend in English (Hund -> "hound").
    It returns a list of results with 'title', 'image_url' and 'thumbnail_url'.
    Pick a result whose title suggests ONE typical example of the thing. Skip titles with
    "types", "breeds", "chart", "collage", "set", "infographic", "meme", "vs", "list".
+   The lead image of the Wikipedia article about the thing itself (e.g. "Wikipedia article 'Dog'", not a film,
+   band or company of that name) is usually a good typical example.
 2. Call download_file with the chosen result's image_url and a file name, e.g. filename='hund.jpg'.
    If the download fails (403, 404, hotlinking), call download_file with its thumbnail_url or try the next result.
 3. Only after download_file has returned the saved path, call final_answer with word, image_url and that image_path.
@@ -160,17 +164,20 @@ def make_image_validator(model: Model):
     return validate_image
 
 
-def build_image_searcher(model: Model, validator_model: Model, openserp_base_url: str, download_dir: Path,
-                         max_steps: int, verbosity_level: int) -> DictManagedAgent:
-    from openserp import OpenSERP
+def build_image_searcher(model: Model, validator_model: Model, download_dir: Path, cache: WebCache,
+                         max_steps: int, verbosity_level: int, openserp_base_url: str = "") -> DictManagedAgent:
+    """Images come from Wikimedia, and first from OpenSERP if its URL is set."""
+    tools: list[Tool] = []
+    client = None
+    if openserp_base_url:
+        from openserp import OpenSERP
 
-    from .search import OpenSERPImageSearchTool, OpenSERPWebPageSearchTool
-
-    client = OpenSERP(base_url=openserp_base_url)
+        client = OpenSERP(base_url=openserp_base_url)
+        tools.append(OpenSERPWebPageSearchTool(client))
+    tools += [WebImageSearchTool(cache, client), DownloadFileTool(download_dir), SearcherFinalAnswerTool()]
     return DictManagedAgent(
         model=model,
-        tools=[OpenSERPWebPageSearchTool(client), OpenSERPImageSearchTool(client), DownloadFileTool(download_dir),
-               SearcherFinalAnswerTool()],
+        tools=tools,
         name="image_searcher",
         description=SEARCHER_DESCRIPTION,
         instructions=SEARCHER_INSTRUCTIONS,

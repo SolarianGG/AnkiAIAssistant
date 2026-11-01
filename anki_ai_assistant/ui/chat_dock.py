@@ -16,6 +16,7 @@ from ..core.transcript import BROWSE_LINK, STEP_LINK, Transcript
 ADDON_DIR = Path(__file__).resolve().parent.parent
 # user_files survives add-on updates
 DOWNLOAD_DIR = ADDON_DIR / "user_files" / "downloads"
+CACHE_DIR = ADDON_DIR / "user_files" / "cache"
 
 
 class ChatDock(QDockWidget):
@@ -214,7 +215,7 @@ class ChatDock(QDockWidget):
 
         service = self._build_service()
         tools = read_tools(service) + write_tools(service, DOWNLOAD_DIR) + destructive_tools(service)
-        return build_agent(self._config(), tools=tools, download_dir=DOWNLOAD_DIR)
+        return build_agent(self._config(), tools=tools, download_dir=DOWNLOAD_DIR, cache_dir=CACHE_DIR)
 
     def _build_service(self):
         """One service per dialog, so a dialog backs the collection up before its first write."""

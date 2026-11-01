@@ -69,19 +69,24 @@ class AssistantModel(OpenAIServerModel):
 
     def generate(self, messages, *args, **kwargs):
         response = super().generate(messages, *args, **kwargs)
-        self._check_context(len(messages), response.token_usage.input_tokens if response.token_usage else None)
+        tools = tuple(sorted(t.name for t in kwargs.get("tools_to_call_from") or []))
+        self._check_context(len(messages), response.token_usage.input_tokens if response.token_usage else None, tools)
         return response
 
-    def _check_context(self, message_count: int, prompt_tokens: int | None) -> None:
+    def _check_context(self, message_count: int, prompt_tokens: int | None, tools: tuple = ()) -> None:
         """Fail clearly when the server cut the conversation to fit the model's context window.
 
         Servers like Ollama drop the start of a prompt that is too long without any error: the model loses
         its instructions and tools and answers nonsense. Within a dialog the history only grows,
-        so fewer prompt tokens for at least as many messages means the server cut it."""
-        last = getattr(self, "_last_prompt", None)
+        so fewer prompt tokens for at least as many messages means the server cut it.
+
+        Only requests with the same tools are compared: their schemas are part of the prompt. smolagents asks
+        for the final answer after the last step without tools, and that prompt is ~5k tokens shorter."""
         if prompt_tokens is None:
             return
-        self._last_prompt = (message_count, prompt_tokens)
+        last_prompts = self.__dict__.setdefault("_last_prompts", {})
+        last = last_prompts.get(tools)
+        last_prompts[tools] = (message_count, prompt_tokens)
         if last is not None and message_count >= last[0] and prompt_tokens < last[1]:
             raise ContextOverflowError(
                 f"The conversation no longer fits the model's context window: the server cut it "

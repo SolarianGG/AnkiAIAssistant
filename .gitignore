@@ -18,9 +18,6 @@ images/
 # IDE
 .idea/
 
-# Logs of local agent runs
-execution_log.txt
-
 # Built add-on packages and vendored dependencies
 *.ankiaddon
 anki_ai_assistant/vendor/
