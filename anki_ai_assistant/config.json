@@ -6,7 +6,7 @@
   "roles": {
     "manager": {"provider": "openrouter", "model": "nvidia/nemotron-3-ultra-550b-a55b:free", "reasoning_effort": "", "max_steps": 20},
     "searcher": {"provider": "openrouter", "model": "google/gemma-4-31b-it:free", "reasoning_effort": "none", "max_steps": 20},
-    "validator": {"provider": "ollama", "model": "qwen3.5:9b", "reasoning_effort": "none"}
+    "validator": {"provider": "ollama", "model": "qwen3.5:9b", "reasoning_effort": "none", "context_length": 0}
   },
   "openserp_base_url": "http://localhost:7000",
   "llm_timeout": 180,

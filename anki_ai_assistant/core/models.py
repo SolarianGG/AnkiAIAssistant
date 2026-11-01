@@ -85,7 +85,7 @@ class AssistantModel(OpenAIServerModel):
             raise ContextOverflowError(
                 f"The conversation no longer fits the model's context window: the server cut it "
                 f"from {last[1]} to {prompt_tokens} tokens. Start a new dialog, or give the model a larger context "
-                f"(for Ollama set OLLAMA_CONTEXT_LENGTH=32768 and restart it).")
+                f"(for Ollama set context_length of the role in the add-on config, e.g. 32768).")
 
     def parse_tool_calls(self, message: ChatMessage) -> ChatMessage:
         """Called when the API returned no tool_calls: the call may be in the text instead."""
@@ -128,6 +128,12 @@ def build_model(config: dict[str, Any], role: str) -> AssistantModel:
     api_key = provider.get("api_key") or os.environ.get(f"{provider_name.upper()}_API_KEY")
     if not api_key:
         raise ConfigError(f"No API key for the provider '{provider_name}'. Set it in the add-on config.")
+
+    context_length = int(role_config.get("context_length") or 0)
+    if context_length:
+        from .ollama import model_with_context
+
+        model_id = model_with_context(provider["api_base"], model_id, context_length)
 
     kwargs = {}
     if role_config.get("reasoning_effort"):

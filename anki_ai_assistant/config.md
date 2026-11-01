@@ -15,6 +15,6 @@
 
 `llm_timeout` is the per-request timeout in seconds, `llm_max_retries` how many times a failed request is resent.
 
-Ollama's OpenAI endpoint cannot set the context size per request: set `OLLAMA_CONTEXT_LENGTH` for the Ollama server instead. 8192 fits a short task; 32768 is recommended for longer dialogs. When the dialog outgrows the context, the assistant stops with an error instead of answering nonsense.
+`context_length` (optional, Ollama only) is the model's context window in tokens; `0` or no value uses the Ollama server's default (`OLLAMA_CONTEXT_LENGTH`, often 4096 or 8192). The assistant's instructions and tools alone take about 5500 tokens, so 16384 is the minimum for the manager and 32768 is recommended for longer dialogs; a larger context needs more memory. Ollama's OpenAI endpoint cannot set the context per request, so the add-on creates a model `<model>-ctx<N>` in Ollama once: it uses the same weights, nothing is downloaded, and it appears in `ollama list`. When the dialog outgrows the context, the assistant stops with an error instead of answering nonsense.
 
 Changes take effect in the next dialog.
