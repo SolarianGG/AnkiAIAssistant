@@ -28,3 +28,6 @@ anki_ai_assistant/vendor/
 # Anki keeps the user's add-on settings (with API keys) and files here
 anki_ai_assistant/meta.json
 anki_ai_assistant/user_files/
+
+# Collection of the dev CLI (main.py)
+dev_collection/

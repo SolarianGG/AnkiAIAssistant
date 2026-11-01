@@ -39,9 +39,14 @@ class AnkiService:
         self._backup = backup
         self._timeout = timeout
         self._backed_up = False
+        # The agent runs several tool calls of one step in parallel threads. In Anki the main thread runs them
+        # one by one; without run_on_main this lock does, so the undo steps of two writes cannot interleave
+        self._direct_lock = threading.RLock()
 
     def read(self, fn: Callable[[Collection], T]) -> T:
-        """Run fn(col) on the main thread and return its result."""
+        """Run fn(col) on the main thread and return its result, without an undo step.
+
+        Also for media writes: Anki keeps media outside the undo history anyway."""
         return self._call_on_main(lambda: fn(self._col()))
 
     def write(self, description: str, fn: Callable[[Collection], T]) -> T:
@@ -69,7 +74,10 @@ class AnkiService:
         return col
 
     def _call_on_main(self, fn: Callable[[], T]) -> T:
-        if self._run_on_main is None or threading.current_thread() is threading.main_thread():
+        if self._run_on_main is None:
+            with self._direct_lock:
+                return fn()
+        if threading.current_thread() is threading.main_thread():
             return fn()
 
         future: Future = Future()

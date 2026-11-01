@@ -40,29 +40,34 @@ class DownloadFileTool(Tool):
 
     def forward(self, url: str, filename: str, timeout: float | None = None) -> str:
         path = self.download_dir / safe_filename(filename)
-        # Agents tend to pass timeout=30 by habit, so cap it
-        timeout = min(timeout or MAX_DOWNLOAD_TIMEOUT, MAX_DOWNLOAD_TIMEOUT)
-        # httpx's timeout limits each network operation, not the whole download: a host that keeps sending
-        # bytes slowly never trips it, so check the total time and size while streaming
-        deadline = time.monotonic() + timeout
-        chunks, size = [], 0
-        try:
-            # Many image hosts (e.g. Wikimedia) reject requests without a User-Agent
-            with httpx.stream("GET", url, timeout=timeout, follow_redirects=True,
-                              headers={"User-Agent": USER_AGENT}) as res:
-                res.raise_for_status()
-                for chunk in res.iter_bytes():
-                    chunks.append(chunk)
-                    size += len(chunk)
-                    if size > MAX_DOWNLOAD_BYTES:
-                        raise ValueError(f"File is larger than {MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB: "
-                                         "try the thumbnail_url or another result")
-                    if time.monotonic() > deadline:
-                        raise TimeoutError(f"Download took longer than {timeout:g} s: try another result")
-        except httpx.TimeoutException as e:
-            # httpx timeouts often have an empty message, which leaves the agent guessing
-            raise TimeoutError(f"Download timed out after {timeout:g} s: try another result") from e
-
+        data = fetch(url, timeout)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"".join(chunks))
+        path.write_bytes(data)
         return str(path)
+
+
+def fetch(url: str, timeout: float | None = None) -> bytes:
+    """Download a file with a cap on the total time and size."""
+    # Agents tend to pass timeout=30 by habit, so cap it
+    timeout = min(timeout or MAX_DOWNLOAD_TIMEOUT, MAX_DOWNLOAD_TIMEOUT)
+    # httpx's timeout limits each network operation, not the whole download: a host that keeps sending
+    # bytes slowly never trips it, so check the total time and size while streaming
+    deadline = time.monotonic() + timeout
+    chunks, size = [], 0
+    try:
+        # Many image hosts (e.g. Wikimedia) reject requests without a User-Agent
+        with httpx.stream("GET", url, timeout=timeout, follow_redirects=True,
+                          headers={"User-Agent": USER_AGENT}) as res:
+            res.raise_for_status()
+            for chunk in res.iter_bytes():
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > MAX_DOWNLOAD_BYTES:
+                    raise ValueError(f"File is larger than {MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB: "
+                                     "try the thumbnail_url or another result")
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"Download took longer than {timeout:g} s: try another result")
+    except httpx.TimeoutException as e:
+        # httpx timeouts often have an empty message, which leaves the agent guessing
+        raise TimeoutError(f"Download timed out after {timeout:g} s: try another result") from e
+    return b"".join(chunks)

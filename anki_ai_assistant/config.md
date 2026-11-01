@@ -9,10 +9,12 @@
 
 `max_steps` limits the agent's steps per request.
 
+`extra_body` (optional) adds fields to every request of the role. On OpenRouter it picks who serves the model: the cheapest hosts often break tool calls, so the assistant fails to act. For example `"extra_body": {"provider": {"order": ["fireworks", "together", "deepinfra"]}}` tries those hosts first; add `"allow_fallbacks": false` to use only them.
+
 **openserp_base_url**: a self-hosted OpenSERP server used for image search. Leave it empty to disable image search.
 
 `llm_timeout` is the per-request timeout in seconds, `llm_max_retries` how many times a failed request is resent.
 
-Ollama's OpenAI endpoint cannot set the context size per request: set `OLLAMA_CONTEXT_LENGTH` (8192 or more) for the Ollama server instead.
+Ollama's OpenAI endpoint cannot set the context size per request: set `OLLAMA_CONTEXT_LENGTH` for the Ollama server instead. 8192 fits a short task; 32768 is recommended for longer dialogs. When the dialog outgrows the context, the assistant stops with an error instead of answering nonsense.
 
 Changes take effect in the next dialog.

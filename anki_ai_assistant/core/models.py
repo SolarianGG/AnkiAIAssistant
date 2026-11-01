@@ -15,6 +15,10 @@ class ProviderError(Exception):
     """The provider answered without a completion, e.g. with an error in the body of a 200 response."""
 
 
+class ContextOverflowError(Exception):
+    """The server silently cut the conversation to fit the model's context window."""
+
+
 def _find_tool_call(text: str) -> tuple[str, Any] | None:
     """Find a tool call written as JSON text: the first object with a "name", nested in lists or not.
 
@@ -62,18 +66,52 @@ class AssistantModel(OpenAIServerModel):
         client.chat.completions.create = checked_create
         return client
 
+    def generate(self, messages, *args, **kwargs):
+        response = super().generate(messages, *args, **kwargs)
+        self._check_context(len(messages), response.token_usage.input_tokens if response.token_usage else None)
+        return response
+
+    def _check_context(self, message_count: int, prompt_tokens: int | None) -> None:
+        """Fail clearly when the server cut the conversation to fit the model's context window.
+
+        Servers like Ollama drop the start of a prompt that is too long without any error: the model loses
+        its instructions and tools and answers nonsense. Within a dialog the history only grows,
+        so fewer prompt tokens for at least as many messages means the server cut it."""
+        last = getattr(self, "_last_prompt", None)
+        if prompt_tokens is None:
+            return
+        self._last_prompt = (message_count, prompt_tokens)
+        if last is not None and message_count >= last[0] and prompt_tokens < last[1]:
+            raise ContextOverflowError(
+                f"The conversation no longer fits the model's context window: the server cut it "
+                f"from {last[1]} to {prompt_tokens} tokens. Start a new dialog, or give the model a larger context "
+                f"(for Ollama set OLLAMA_CONTEXT_LENGTH=32768 and restart it).")
+
     def parse_tool_calls(self, message: ChatMessage) -> ChatMessage:
         """Called when the API returned no tool_calls: the call may be in the text instead."""
         if not message.tool_calls and isinstance(message.content, str) and message.content.strip():
-            found = _find_tool_call(message.content)
+            text = message.content.strip()
+            found = _find_tool_call(text)
+            if found is None and _looks_like_tool_call(text):
+                # A call we cannot read must not reach the user as the answer: the parse error goes back
+                # to the model, which then writes the call again
+                raise ValueError("The tool call could not be read. Call the tool again with valid arguments.")
             # Plain text without any call is the model talking to the user: treat it as the answer
-            name, arguments = found or ("final_answer", {"answer": message.content.strip()})
+            name, arguments = found or ("final_answer", {"answer": text})
             message.role = MessageRole.ASSISTANT
             message.tool_calls = [ChatMessageToolCall(
                 id=str(uuid.uuid4()), type="function",
                 function=ChatMessageToolCallFunction(name=name, arguments=arguments),
             )]
         return super().parse_tool_calls(message)
+
+
+_CALL_MARKERS = ("<tool_call", "<function", "<|tool")
+
+
+def _looks_like_tool_call(text: str) -> bool:
+    """Call syntax the API did not turn into tool_calls. Some providers also cut the reply right there ('<too')."""
+    return any(marker in text or marker.startswith(text) for marker in _CALL_MARKERS)
 
 
 def build_model(config: dict[str, Any], role: str) -> AssistantModel:
@@ -94,6 +132,9 @@ def build_model(config: dict[str, Any], role: str) -> AssistantModel:
     kwargs = {}
     if role_config.get("reasoning_effort"):
         kwargs["reasoning_effort"] = role_config["reasoning_effort"]
+    # Provider-specific request fields, e.g. OpenRouter's {"provider": {"order": ["z-ai"]}} to pick who serves the model
+    if role_config.get("extra_body"):
+        kwargs["extra_body"] = role_config["extra_body"]
     return AssistantModel(
         model_id=model_id,
         api_base=provider["api_base"],

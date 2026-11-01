@@ -1,18 +1,13 @@
 """Read-only tools: the agent looks at the collection before it changes anything. They run without confirmation."""
 
-import difflib
-import json
-from collections.abc import Callable
 from datetime import date, datetime, timedelta
-from typing import Any, TypeVar
 
 from anki.collection import Collection
 from anki.errors import AnkiException
 from smolagents import Tool
 
-from .service import AnkiService, describe_error
-
-T = TypeVar("T")
+from .service import AnkiService
+from .tools_base import AnkiTool, AnkiToolError, find_deck, find_note_type, to_json as _json
 
 DEFAULT_SEARCH_LIMIT = 20
 MAX_SEARCH_LIMIT = 100
@@ -24,52 +19,12 @@ CARD_TYPES = {0: "new", 1: "learning", 2: "review", 3: "relearning"}
 CARD_QUEUES = {-3: "buried", -2: "buried", -1: "suspended"}
 
 
-class AnkiToolError(Exception):
-    """A wrong tool call, e.g. an unknown deck. The message tells the model how to fix the call."""
-
-
-def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False)
-
-
-def _suggest(name: str, known: list[str], what: str) -> AnkiToolError:
-    close = difflib.get_close_matches(name, known, n=5, cutoff=0.5)
-    hint = f" Did you mean: {', '.join(close)}?" if close else f" Call list_{what}s to see them."
-    return AnkiToolError(f"No {what.replace('_', ' ')} named '{name}'.{hint}")
-
-
-def find_deck(col: Collection, name: str) -> dict:
-    deck_id = col.decks.id_for_name(name)
-    if deck_id is None:
-        raise _suggest(name, [d.name for d in col.decks.all_names_and_ids()], "deck")
-    return col.decks.get(deck_id)
-
-
-def find_note_type(col: Collection, name: str) -> dict:
-    note_type = col.models.by_name(name)
-    if note_type is None:
-        raise _suggest(name, [m.name for m in col.models.all_names_and_ids()], "note_type")
-    return note_type
-
-
 def _kind(note_type: dict) -> str:
     return "cloze" if note_type["type"] == 1 else "standard"
 
 
-class AnkiReadTool(Tool):
-    """Base of the read tools: the risk level for the confirmation layer, and collection errors as plain text."""
-
+class AnkiReadTool(AnkiTool):
     risk = "read"
-
-    def __init__(self, service: AnkiService, **kwargs):
-        super().__init__(**kwargs)
-        self.service = service
-
-    def read(self, fn: Callable[[Collection], T]) -> T:
-        try:
-            return self.service.read(fn)
-        except AnkiException as e:
-            raise AnkiToolError(describe_error(e)) from e
 
 
 class ListDecksTool(AnkiReadTool):
@@ -89,7 +44,7 @@ class ListDecksTool(AnkiReadTool):
                 for child in node.children:
                     name = f"{parent}::{child.name}" if parent else child.name
                     decks.append({
-                        "name": name, "id": child.deck_id,
+                        "name": name,
                         "cards": child.total_in_deck, "cards_with_subdecks": child.total_including_children,
                         "due_today": {"new": child.new_count, "learn": child.learn_count,
                                       "review": child.review_count},
@@ -155,7 +110,7 @@ class ListNoteTypesTool(AnkiReadTool):
         def run(col: Collection) -> list[dict]:
             counts = {m.id: m.use_count for m in col.models.all_use_counts()}
             return [{
-                "name": m["name"], "id": m["id"], "kind": _kind(m), "notes": counts.get(m["id"], 0),
+                "name": m["name"], "kind": _kind(m), "notes": counts.get(m["id"], 0),
                 "fields": [f["name"] for f in m["flds"]],
                 "templates": [t["name"] for t in m["tmpls"]],
             } for m in col.models.all()]
@@ -176,7 +131,7 @@ class GetNoteTypeTool(AnkiReadTool):
         def run(col: Collection) -> dict:
             m = find_note_type(col, name)
             return {
-                "name": m["name"], "id": m["id"], "kind": _kind(m),
+                "name": m["name"], "kind": _kind(m),
                 "sort_field": m["flds"][m["sortf"]]["name"],
                 "fields": [{"name": f["name"], **({"description": f["description"]} if f.get("description") else {})}
                            for f in m["flds"]],

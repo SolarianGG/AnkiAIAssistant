@@ -107,11 +107,14 @@ class ChatDock(QDockWidget):
     def _build_agent(self):
         """Called in the worker thread on the first request of a dialog."""
         from ..anki_api.tools_read import read_tools
+        from ..anki_api.tools_write import write_tools
         from ..core.agent import build_agent
         from ..core.config import load_config
 
         config = load_config(self.mw.addonManager.getConfig(self.addon_module))
-        return build_agent(config, tools=read_tools(self._build_service()), download_dir=DOWNLOAD_DIR)
+        service = self._build_service()
+        tools = read_tools(service) + write_tools(service, DOWNLOAD_DIR)
+        return build_agent(config, tools=tools, download_dir=DOWNLOAD_DIR)
 
     def _build_service(self):
         """One service per dialog, so a dialog backs the collection up before its first write."""
