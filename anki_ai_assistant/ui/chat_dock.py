@@ -106,6 +106,7 @@ class ChatDock(QDockWidget):
 
     def _build_agent(self):
         """Called in the worker thread on the first request of a dialog."""
+        from ..anki_api.tools_destructive import destructive_tools
         from ..anki_api.tools_read import read_tools
         from ..anki_api.tools_write import write_tools
         from ..core.agent import build_agent
@@ -113,7 +114,7 @@ class ChatDock(QDockWidget):
 
         config = load_config(self.mw.addonManager.getConfig(self.addon_module))
         service = self._build_service()
-        tools = read_tools(service) + write_tools(service, DOWNLOAD_DIR)
+        tools = read_tools(service) + write_tools(service, DOWNLOAD_DIR) + destructive_tools(service)
         return build_agent(config, tools=tools, download_dir=DOWNLOAD_DIR)
 
     def _build_service(self):
@@ -121,6 +122,7 @@ class ChatDock(QDockWidget):
         from aqt.operations import on_op_finished
 
         from ..anki_api.service import AnkiService
+        from .confirm_dialog import confirm_change
 
         mw = self.mw
         return AnkiService(
@@ -130,6 +132,8 @@ class ChatDock(QDockWidget):
             on_changes=lambda changes: on_op_finished(mw, changes, None),
             backup=lambda col: col.create_backup(backup_folder=mw.pm.backupFolder(), force=True,
                                                  wait_for_completion=False),
+            # Over the window the user works in, e.g. the browser
+            confirm=lambda plan: confirm_change(mw.app.activeWindow() or mw, plan),
         )
 
     def _show_event(self, event: Any) -> None:

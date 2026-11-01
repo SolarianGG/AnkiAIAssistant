@@ -1,5 +1,6 @@
-"""Write tools: they add to the collection or change a few notes. They run without confirmation,
-but every call is one undo step "AI: ..." (Edit > Undo), and the collection is backed up before the first one.
+"""Write tools: they add to the collection or change a few notes. They run without confirmation
+(update_notes asks only when it changes many notes), but every call is one undo step "AI: ..." (Edit > Undo),
+and the collection is backed up before the first one.
 
 Each tool checks its input before it calls service.write(), so a wrong call leaves no empty undo step."""
 
@@ -12,11 +13,15 @@ from anki.notes import NoteFieldsCheckResult
 from smolagents import Tool
 
 from ..web.download import fetch, safe_filename
+from .confirm import ChangePlan
 from .service import AnkiService
-from .tools_base import AnkiTool, AnkiToolError, check_field_names, find_deck, find_note_type, to_json
+from .tools_base import (AnkiTool, AnkiToolError, check_field_names, find_deck, find_note_type, short_text,
+                         to_json)
 
 MAX_ADD_NOTES = 100
+# More notes than this need the user's confirmation
 MAX_UPDATE_NOTES = 20
+MAX_BULK_UPDATE_NOTES = 200
 MAX_TAG_NOTES = 1000
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
@@ -150,7 +155,8 @@ class UpdateNotesTool(AnkiWriteTool):
     description = (
         "Change fields of existing notes. Only the given fields change; the others keep their content. "
         "Get the note ids and the current field contents with search_notes(full_fields=true) first. "
-        f"At most {MAX_UPDATE_NOTES} notes per call."
+        f"Changes of more than {MAX_UPDATE_NOTES} notes are shown to the user to confirm; "
+        f"at most {MAX_BULK_UPDATE_NOTES} notes per call. To replace the same text in many notes use find_replace."
     )
     inputs = {"notes": {"type": "array",
                         "items": {"type": "object", "required": ["id", "fields"],
@@ -161,9 +167,8 @@ class UpdateNotesTool(AnkiWriteTool):
     def forward(self, notes: list) -> str:
         if not notes:
             raise AnkiToolError("Pass at least one note.")
-        if len(notes) > MAX_UPDATE_NOTES:
-            raise AnkiToolError(f"Too many notes: update at most {MAX_UPDATE_NOTES} per call. "
-                                "For more, ask the user first.")
+        if len(notes) > MAX_BULK_UPDATE_NOTES:
+            raise AnkiToolError(f"Too many notes: update at most {MAX_BULK_UPDATE_NOTES} per call.")
         changes: dict[int, dict] = {}
         for item in notes:
             if not isinstance(item, dict) or "id" not in item or not isinstance(item.get("fields"), dict):
@@ -171,17 +176,26 @@ class UpdateNotesTool(AnkiWriteTool):
             changes.setdefault(int(item["id"]), {}).update(
                 {k: "" if v is None else str(v) for k, v in item["fields"].items()})
 
-        def check(col: Collection) -> dict[int, list[str]]:
-            changed = {}
+        def check(col: Collection) -> tuple[dict[int, list[str]], list[str]]:
+            changed, diff = {}, []
             for note_id, fields in changes.items():
                 note = _get_note(col, note_id)
                 check_field_names(note.note_type(), fields)
                 changed_names = [name for name, value in fields.items() if note[name] != value]
                 if changed_names:
                     changed[note_id] = changed_names
-            return changed
+                    if len(diff) < 90:
+                        for name in changed_names:
+                            diff += [f"{note_id} {name}:", f"- {short_text(note[name])}", f"+ {short_text(fields[name])}"]
+            return changed, diff
 
-        changed = self.read(check)
+        changed, diff = self.read(check)
+        if len(changed) > MAX_UPDATE_NOTES:
+            declined = self.ask(ChangePlan(
+                kind="bulk_update_notes", title=f"Edit {_plural(len(changed), 'note')}",
+                summary="Only the listed fields change; the others keep their content.", details="\n".join(diff)))
+            if declined:
+                return declined
         if changed:
             def update(col: Collection) -> None:
                 # Read the notes again: the user may have edited one meanwhile

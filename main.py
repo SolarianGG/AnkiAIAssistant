@@ -16,7 +16,9 @@ from anki.collection import Collection
 from dotenv import load_dotenv
 from smolagents import LogLevel
 
+from anki_ai_assistant.anki_api.confirm import FULL_SYNC_WARNING, ChangePlan, Decision
 from anki_ai_assistant.anki_api.service import AnkiService
+from anki_ai_assistant.anki_api.tools_destructive import destructive_tools
 from anki_ai_assistant.anki_api.tools_read import read_tools
 from anki_ai_assistant.anki_api.tools_write import write_tools
 from anki_ai_assistant.core.agent import build_agent
@@ -39,6 +41,19 @@ def user_config() -> dict:
     return {}
 
 
+def confirm_in_console(plan: ChangePlan) -> Decision:
+    """The CLI's version of the confirmation dialog."""
+    print(f"\n=== {plan.title}\n{plan.summary}")
+    if plan.full_sync:
+        print("!!! " + FULL_SYNC_WARNING)
+    if plan.details:
+        print(plan.details)
+    answer = input("Apply? y = yes; anything else declines and is passed to the assistant as a comment: ").strip()
+    if answer.lower() in ("y", "yes"):
+        return Decision(True)
+    return Decision(False, "" if answer.lower() in ("", "n", "no") else answer)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--collection", type=Path, default=DEFAULT_COLLECTION, help="collection file (.anki2)")
@@ -50,8 +65,8 @@ def main():
     col = Collection(str(args.collection))
     try:
         # Everything runs in this one thread, so the service calls the collection directly
-        service = AnkiService(lambda: col)
-        tools = read_tools(service) + write_tools(service, DOWNLOAD_DIR)
+        service = AnkiService(lambda: col, confirm=confirm_in_console)
+        tools = read_tools(service) + write_tools(service, DOWNLOAD_DIR) + destructive_tools(service)
         agent = build_agent(load_config(user_config()), tools=tools, download_dir=DOWNLOAD_DIR,
                             verbosity_level=LogLevel.INFO)
         print(agent.run(" ".join(args.task) or DEFAULT_TASK))
