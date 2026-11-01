@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+
+# Downloaded card images
+images/
+
+# IDE
+.idea/
+
+# Logs of local agent runs
+execution_log.txt
+
+# Built add-on packages and vendored dependencies
+*.ankiaddon
+anki_ai_assistant/vendor/
