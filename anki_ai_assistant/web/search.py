@@ -5,6 +5,7 @@ from typing import Any
 
 from smolagents import Tool
 
+from ..core.logs import log, short
 from .net import WebCache
 
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
@@ -87,8 +88,12 @@ class WebImageSearchTool(Tool):
                            for r in resp.results or [] if r.image and r.image.url]
                 if results:
                     return results
-            except Exception:
-                pass  # OpenSERP is often not running: Wikimedia needs no server of its own
+                log.info("OpenSERP found no images for %r: searching Wikimedia", query)
+            except Exception as e:
+                # OpenSERP is often not running: Wikimedia needs no server of its own.
+                # The model sees only the Wikimedia results, so the failure is visible in the log alone
+                log.warning("OpenSERP image search failed for %r (%s: %s): searching Wikimedia",
+                            query, type(e).__name__, short(e, 500))
         return wikimedia_images(self.cache, query, limit)
 
 

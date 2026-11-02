@@ -92,7 +92,8 @@ class AgentRunner:
         return bool(steps) and isinstance(getattr(steps[-1], "error", None), AgentMaxStepsError)
 
     def _run(self, task: str) -> None:
-        log.info("request (%s dialog): %s", "continued" if self._has_history else "new", short(task))
+        # In full: the request is what the whole run is checked against
+        log.info("request (%s dialog): %s", "continued" if self._has_history else "new", task)
         try:
             if self._agent is None:
                 self._agent = self._agent_factory()

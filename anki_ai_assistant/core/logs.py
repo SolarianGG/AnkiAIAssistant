@@ -36,13 +36,16 @@ def short(value: Any, limit: int = MAX_TEXT) -> str:
     return text if len(text) <= limit else f"{text[:limit]}… [{len(text) - limit} more characters]"
 
 
-def log_step(step: Any) -> None:
-    """One line per agent step: its number, the tokens, the tool calls and their results, the error."""
+def log_step(step: Any, agent: Any = None) -> None:
+    """One line per agent step: its number, the tokens, the tool calls and their results, the error.
+
+    Also a step callback of managed agents (smolagents passes agent=): their steps get the agent's name."""
     from smolagents.memory import ActionStep
 
     if not isinstance(step, ActionStep):
         return
-    parts = [f"step {step.step_number}"]
+    name = getattr(agent, "name", None)
+    parts = [f"{name} step {step.step_number}" if name else f"step {step.step_number}"]
     usage = getattr(step, "token_usage", None)
     if usage is not None:
         parts.append(f"tokens in {usage.input_tokens} out {usage.output_tokens}")

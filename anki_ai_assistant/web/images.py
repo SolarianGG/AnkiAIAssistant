@@ -13,6 +13,7 @@ from smolagents.agents import RunResult, populate_template
 from smolagents.models import ChatMessage, MessageRole
 
 from ..core.history import NativeToolHistory
+from ..core.logs import log, log_step, short
 from .download import DownloadFileTool
 from .net import WebCache
 from .search import OpenSERPWebPageSearchTool, WebImageSearchTool
@@ -97,6 +98,7 @@ class DictManagedAgent(NativeToolHistory, ToolCallingAgent):
         with self._call_lock:
             # Kept for the image validator, which needs the word as the manager asked it
             self.manager_task = task
+            log.info("%s task: %s", self.name, task)
             full_task = populate_template(self.prompt_templates["managed_agent"]["task"],
                                           variables=dict(name=self.name, task=task))
             result = self.run(full_task, **kwargs)
@@ -215,6 +217,7 @@ def make_image_validator(model: Model, download_dir: Path):
             verdict, reason = answer["verdict"], answer["reason"]
         except (json.JSONDecodeError, KeyError, TypeError):
             verdict, reason = "NO", f"unreadable validator answer {text.strip()[:200]!r}"
+        log.info("validator %s for %r, %s: %s", verdict, task, path, short(reason, 500))
         if verdict != "YES":
             raise ValueError(f"Image validator rejected '{path}' for '{word}': {reason}. "
                              "Find and download another image that avoids this problem.")
@@ -243,5 +246,7 @@ def build_image_searcher(model: Model, validator_model: Model, download_dir: Pat
         prompt_templates=_searcher_prompt_templates(),
         max_steps=max_steps,
         final_answer_checks=[make_image_validator(validator_model, download_dir)],
+        # The manager's log shows only the call and its result: the searches, downloads and rejections go here
+        step_callbacks=[log_step],
         verbosity_level=verbosity_level,
     )

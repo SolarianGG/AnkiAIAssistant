@@ -330,3 +330,68 @@ def test_searcher_out_of_steps_reports_its_real_errors():
     answer = Fake()("voiture (car)")
     assert answer["word"] == "voiture (car)" and "used all its steps" in answer["error"]
     assert "403 Forbidden" in answer["error"] and "a toy" in answer["error"] and "I used the tool" not in answer["error"]
+
+
+def test_searcher_steps_and_validator_verdicts_are_logged(tmp_path):
+    """The manager's log shows only the image_searcher call: its own steps and the verdicts go to the log too."""
+    import logging
+
+    from smolagents.memory import ActionStep, ToolCall
+    from smolagents.monitoring import Timing
+
+    from anki_ai_assistant.core.logs import log, log_step
+    from anki_ai_assistant.web.images import build_image_searcher, make_image_validator
+
+    records = []
+    handler = logging.Handler()
+    handler.emit = lambda record: records.append(record.getMessage())
+    log.addHandler(handler)
+    old_level = log.level
+    log.setLevel(logging.INFO)
+    try:
+        searcher = build_image_searcher(model=SimpleNamespace(model_id="m"), validator_model=None,
+                                        download_dir=tmp_path, cache=WebCache(None), max_steps=3, verbosity_level=-1)
+        step = ActionStep(step_number=2, timing=Timing(start_time=0, end_time=1),
+                          tool_calls=[ToolCall(name="web_image_search", arguments={"query": "dog"}, id="1")])
+        searcher.step_callbacks.callback(step, agent=searcher)
+        assert records[-1].startswith("image_searcher step 2") and "web_image_search" in records[-1]
+        log_step(step)
+        assert records[-1].startswith("step 2")
+
+        path = tmp_path / "dog.jpg"
+        Image.new("RGB", (8, 8)).save(path)
+        model = SimpleNamespace(generate=lambda *a, **k: SimpleNamespace(
+            content='{"verdict": "NO", "reason": "a cat"}'))
+        validate = make_image_validator(model=model, download_dir=tmp_path)
+        with pytest.raises(ValueError, match="a cat"):
+            validate({"word": "dog", "image_path": str(path)}, SimpleNamespace(steps=[]),
+                     agent=SimpleNamespace(manager_task="Hund (dog)"))
+        assert "validator NO for 'Hund (dog)'" in records[-1] and "a cat" in records[-1]
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(old_level)
+
+
+def test_openserp_failure_is_logged_before_the_wikimedia_fallback():
+    import logging
+
+    from anki_ai_assistant.core.logs import log
+
+    class DownSERP:
+        def mega_image(self, **kwargs):
+            raise ConnectionError("connection refused")
+
+    records = []
+    handler = logging.Handler()
+    handler.emit = lambda record: records.append(record.getMessage())
+    log.addHandler(handler)
+    old_level = log.level
+    log.setLevel(logging.INFO)
+    try:
+        # The fake Wikimedia knows no URL: the fallback ran
+        with pytest.raises(NotFound):
+            WebImageSearchTool(FakeCache({}), DownSERP()).forward("dog")
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(old_level)
+    assert any("OpenSERP image search failed for 'dog'" in r and "connection refused" in r for r in records)
