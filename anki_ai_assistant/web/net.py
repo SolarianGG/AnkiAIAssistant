@@ -14,7 +14,7 @@ MAX_DOWNLOAD_TIMEOUT = 10.0
 MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
 # Wikimedia rejects requests without a User-Agent and answers 429 to files it has not cached
 # when the User-Agent has no contact URL
-USER_AGENT = "AnkiAIAssistant/0.1 (Anki add-on; https://github.com/)"
+USER_AGENT = "AnkiAIAssistant/0.1 (Anki add-on; https://github.com/SolarianGG/AnkiAIAssistant)"
 # Dictionary entries and search results hardly change within a week
 CACHE_TTL = 7 * 24 * 3600
 # A busy server (429 Too Many Requests, 503) is asked again this many times, after at most MAX_RETRY_DELAY s
