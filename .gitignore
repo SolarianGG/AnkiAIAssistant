@@ -12,8 +12,9 @@ wheels/
 # Secrets
 .env
 
-# Downloaded card images
-images/
+# Card images downloaded by the dev CLI; the README screenshots stay
+images/*
+!images/example_*.png
 
 # IDE
 .idea/

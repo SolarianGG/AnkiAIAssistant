@@ -28,6 +28,29 @@ Example requests:
 - "Rename the tag `todo` to `review` and suspend the cards of the deck Old stuff."
 - "Make a note type like Basic with an extra Audio field on the back."
 
+## Example
+
+<table>
+  <tr>
+    <td align="center"><em>"Add two cards to the deck 'Test French'. You chose both content and format of the cards."</em></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="images/example_prompt.png" width="600"/></td>
+  </tr>
+</table>
+
+
+<table>
+  <tr>
+    <td align="center"><em>chien - dog, IPA, a picture and an example sentence</em></td>
+    <td align="center"><em>maison - house, IPA, a picture and an example sentence</em></td>
+  </tr>
+  <tr>
+    <td><img src="images/example_card_1.png" width="400"/></td>
+    <td><img src="images/example_card_2.png" width="400"/></td>
+  </tr>
+</table>
+
 ## Safety
 
 - Reading and adding happen right away. Deleting, bulk edits and changes to note types, deck options or scheduling
@@ -43,18 +66,18 @@ Example requests:
 - Anki Desktop **26.8 or newer** on Windows (Anki's Python 3.13). The add-on bundles its Python dependencies in
   `vendor/`, built for that Python and platform.
 - An API key for a model provider, or a local Ollama.
-  - The **assistant** (manager) needs a model that handles tool calling well; a cloud model is recommended.
-    Small local models (around 9B) work for simple requests but make mistakes with 25 tools.
-  - The **image checker** (validator) needs a model with image input, e.g. `qwen3.5:9b` in Ollama.
+    - The **assistant** (manager) needs a model that handles tool calling well; a cloud model is recommended.
+      Small local models (around 9B) work for simple requests but make mistakes with 25 tools.
+    - The **image checker** (validator) needs a model with image input, e.g. `qwen3.5:9b` in Ollama.
 
 ## Installing
 
 1. Download or build `anki_ai_assistant-<version>.ankiaddon` (see below).
 2. Double-click it, or use **Tools > Add-ons > Install from file…**, and restart Anki.
 3. Open **Tools > Add-ons > AI Assistant > Config** (or the ⚙ button of the chat) and set:
-   - **Providers:** the API base (ending with `/v1`) and the key of each provider, e.g. OpenRouter
-     `https://openrouter.ai/api/v1`, Ollama `http://localhost:11434/v1`;
-   - **Models:** the provider and the model of each role.
+    - **Providers:** the API base (ending with `/v1`) and the key of each provider, e.g. OpenRouter
+      `https://openrouter.ai/api/v1`, Ollama `http://localhost:11434/v1`;
+    - **Models:** the provider and the model of each role.
 4. Open the chat with **Tools > AI Assistant**.
 
 All settings are described in [`anki_ai_assistant/config.md`](anki_ai_assistant/config.md), which Anki also
