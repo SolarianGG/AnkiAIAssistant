@@ -15,23 +15,25 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VENDOR_DIR = ROOT / "anki_ai_assistant" / "vendor"
+DEFAULT_PYTHON = "3.13"
+DEFAULT_PLATFORM = "x86_64-pc-windows-msvc"
+# Dependencies of dependencies the add-on never uses: hf-xet (9 MB) only speeds up Hugging Face Hub downloads
+UNUSED = {"hf-xet"}
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--python", default="3.13", help="Python version of Anki (Help > About; default: 3.13)")
-    parser.add_argument("--platform", default="x86_64-pc-windows-msvc", help="uv target platform")
-    args = parser.parse_args()
-
+def build_vendor(python: str = DEFAULT_PYTHON, platform: str = DEFAULT_PLATFORM) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         requirements = Path(tmp) / "requirements.txt"
         subprocess.run(["uv", "export", "--frozen", "--no-dev", "--no-hashes", "--no-emit-project",
                         "--format", "requirements-txt", "--output-file", str(requirements)],
                        cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+        lines = requirements.read_text(encoding="utf-8").splitlines()
+        kept = [line for line in lines if line.split("==")[0].strip().lower() not in UNUSED]
+        requirements.write_text("\n".join(kept) + "\n", encoding="utf-8")
         if VENDOR_DIR.exists():
             shutil.rmtree(VENDOR_DIR)
-        subprocess.run(["uv", "pip", "install", "--target", str(VENDOR_DIR), "--python-version", args.python,
-                        "--python-platform", args.platform, "--only-binary", ":all:", "--no-deps",
+        subprocess.run(["uv", "pip", "install", "--target", str(VENDOR_DIR), "--python-version", python,
+                        "--python-platform", platform, "--only-binary", ":all:", "--no-deps",
                         "-r", str(requirements)],
                        cwd=ROOT, check=True)
 
@@ -41,6 +43,14 @@ def main() -> None:
         shutil.rmtree(cache, ignore_errors=True)
     size = sum(f.stat().st_size for f in VENDOR_DIR.rglob("*") if f.is_file())
     print(f"Vendored into {VENDOR_DIR} ({size / 2**20:.0f} MB)")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--python", default=DEFAULT_PYTHON, help="Python version of Anki (Help > About; default: 3.13)")
+    parser.add_argument("--platform", default=DEFAULT_PLATFORM, help="uv target platform")
+    args = parser.parse_args()
+    build_vendor(args.python, args.platform)
 
 
 if __name__ == "__main__":

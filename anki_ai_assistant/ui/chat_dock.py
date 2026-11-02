@@ -1,5 +1,6 @@
 """The chat dock: the dialog with the agent, its steps, previews of the cards it made, the model picker."""
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -19,12 +20,26 @@ DOWNLOAD_DIR = ADDON_DIR / "user_files" / "downloads"
 CACHE_DIR = ADDON_DIR / "user_files" / "cache"
 
 
+def _preload() -> None:
+    """Import smolagents and openai while the user types the first request: on a fresh install (no .pyc yet)
+    it takes several seconds, and done on the first request it would freeze Anki's window.
+    An import in the main thread meanwhile just waits for this one."""
+    try:
+        from ..core import agent, runner  # noqa: F401
+        import openai  # noqa: F401  (smolagents imports it only when the first model is built)
+    except Exception:
+        # The first request imports them again and shows the error
+        pass
+LOG_DIR = ADDON_DIR / "user_files" / "logs"
+
+
 class ChatDock(QDockWidget):
     def __init__(self, mw: AnkiQt, addon_module: str):
         super().__init__("AI Assistant", mw)
         self.mw = mw
         self.addon_module = addon_module
         self.runner = None
+        self.log_path = None
         self.transcript = Transcript()
         self.context: NotesContext | None = None
         self.setObjectName("AIAssistantDock")
@@ -93,6 +108,7 @@ class ChatDock(QDockWidget):
         self.set_context(None)
         self._fill_model_picker()
         self._set_busy(False)
+        threading.Thread(target=_preload, name="AIAssistantPreload", daemon=True).start()
 
     # Actions
 
@@ -192,8 +208,10 @@ class ChatDock(QDockWidget):
     def _get_runner(self):
         if self.runner is None:
             # Imported here: smolagents and openai take a few seconds to import
+            from ..core.logs import setup_logging
             from ..core.runner import AgentRunner
 
+            self.log_path = setup_logging(LOG_DIR)
             self.runner = AgentRunner(
                 self._build_agent,
                 on_event=lambda event: self.mw.taskman.run_on_main(lambda: self._show_event(event)),
@@ -252,9 +270,13 @@ class ChatDock(QDockWidget):
         self._set_busy(False)
 
     def _show_error(self, error: Exception) -> None:
-        from ..core.config import ConfigError
+        from ..core.errors import error_message
 
-        self._add_error(str(error) if isinstance(error, ConfigError) else f"{type(error).__name__}: {error}")
+        self.transcript.add_notice(error_message(error), error=True)
+        if self.log_path is not None:
+            url = QUrl.fromLocalFile(str(self.log_path)).toString()
+            self.transcript.add_html(f'<p style="margin-left: 12px;"><a href="{url}">Details in the log</a></p>')
+        self._render(to_bottom=True)
         self._set_busy(False)
 
     def _show_stopped(self) -> None:
@@ -273,7 +295,7 @@ class ChatDock(QDockWidget):
             note_ids = link[len(BROWSE_LINK):]
             # search_for also works when the browser is already open
             dialogs.open("Browser", self.mw).search_for(f"nid:{note_ids}")
-        elif url.scheme() in ("http", "https"):
+        elif url.scheme() in ("http", "https", "file"):
             QDesktopServices.openUrl(url)
 
     def _render(self, to_bottom: bool = False, keep_position: bool = False) -> None:

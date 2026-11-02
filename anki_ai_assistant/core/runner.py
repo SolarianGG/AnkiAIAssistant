@@ -10,6 +10,8 @@ from smolagents import ToolCallingAgent
 from smolagents.memory import FinalAnswerStep
 from smolagents.utils import AgentMaxStepsError
 
+from .logs import log, log_step, short
+
 
 class RunnerBusy(Exception):
     pass
@@ -90,6 +92,7 @@ class AgentRunner:
         return bool(steps) and isinstance(getattr(steps[-1], "error", None), AgentMaxStepsError)
 
     def _run(self, task: str) -> None:
+        log.info("request (%s dialog): %s", "continued" if self._has_history else "new", short(task))
         try:
             if self._agent is None:
                 self._agent = self._agent_factory()
@@ -111,12 +114,16 @@ class AgentRunner:
                 if isinstance(event, FinalAnswerStep):
                     answer = answer_text(event.output, self._max_steps_reached())
                 else:
+                    log_step(event)
                     self._on_event(event)
+            log.info("answer: %s", short(answer))
             self._on_done(answer)
         except Exception as e:
             # smolagents raises a plain AgentError on interrupt, so tell it apart by our own flag
             if self._stop_requested.is_set():
+                log.info("stopped by the user")
                 self._on_stopped()
             else:
+                log.exception("request failed")
                 self._on_error(e)
 
